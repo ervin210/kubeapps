@@ -1,50 +1,42 @@
 IMPORT_PATH:= github.com/kubeapps/kubeapps
-GOBIN = go
-# Force builds to only use vendor/'ed dependencies
-# i.e. ignore local $GOPATH/src installed sources
-GOPATH_TMP = $(CURDIR)/.GOPATH
-GO = /usr/bin/env GOPATH=$(GOPATH_TMP) $(GOBIN)
-GOFMT = gofmt
-VERSION = dev-$(shell date +%FT%T%z)
+GO = /usr/bin/env go
+GOFMT = /usr/bin/env gofmt
+IMAGE_TAG ?= dev-$(shell date +%FT%H-%M-%S-%Z)
+VERSION ?= $$(git rev-parse HEAD)
 
-BINARY = kubeapps
-GO_PACKAGES = $(IMPORT_PATH)/cmd $(IMPORT_PATH)/pkg/...
-GO_FILES := $(shell find $(shell $(GOBIN) list -f '{{.Dir}}' $(GO_PACKAGES)) -name \*.go)
-GO_FLAGS = -ldflags='-w -X github.com/kubeapps/kubeapps/cmd.VERSION=${VERSION}'
-GO_XFLAGS =
-EMBEDDED_STATIC = generated/statik/statik.go
+IMG_MODIFIER ?= 
 
-default: binary
+GO_PACKAGES = ./...
+GO_FILES := $(shell find $(shell $(GO) list -f '{{.Dir}}' $(GO_PACKAGES)) -name \*.go)
 
-binary: build-prep $(EMBEDDED_STATIC)
-	CGO_ENABLED=1 $(GO) build -i -o $(BINARY) $(GO_FLAGS) $(IMPORT_PATH)
+default: all
 
-binary-travis: build-prep  $(EMBEDDED_STATIC)-travis
-	CGO_ENABLED=1 $(GO) build -i -o $(BINARY) $(GO_FLAGS) $(GO_XFLAGS) $(IMPORT_PATH)
+all: kubeapps/dashboard kubeapps/apprepository-controller
 
-test: build-prep $(EMBEDDED_STATIC)
-	$(GO) test $(GO_FLAGS) $(GO_PACKAGES)
+# TODO(miguel) Create Makefiles per component
+kubeapps/%:
+	docker build -t kubeapps/$*$(IMG_MODIFIER):$(IMAGE_TAG) --build-arg "VERSION=${VERSION}" -f cmd/$*/Dockerfile .
 
-$(EMBEDDED_STATIC): build-prep $(wilcard static/*)
-	$(GO) build -o statik ./vendor/github.com/rakyll/statik/statik.go
-	$(GO) generate
+kubeapps/dashboard:
+	docker build -t kubeapps/dashboard$(IMG_MODIFIER):$(IMAGE_TAG) -f dashboard/Dockerfile dashboard/
 
-$(EMBEDDED_STATIC)-travis: build-prep $(wilcard static/*)
-	GOOS=linux $(GO) build -o statik ./vendor/github.com/rakyll/statik/statik.go
-	GOOS=linux $(GO) generate
+test:
+	$(GO) test $(GO_PACKAGES)
 
-build-prep:
-	mkdir -p $(dir $(GOPATH_TMP)/src/$(IMPORT_PATH))
-	ln -snf $(CURDIR) $(GOPATH_TMP)/src/$(IMPORT_PATH)
+test-all: test-apprepository-controller test-dashboard
+
+test-dashboard:
+	yarn --cwd dashboard/ install --frozen-lockfile
+	yarn --cwd=dashboard run lint
+	CI=true yarn --cwd dashboard/ run test
+
+test-%:
+	$(GO) test -v $(IMPORT_PATH)/cmd/$*
 
 fmt:
 	$(GOFMT) -s -w $(GO_FILES)
 
 vet:
-	$(GO) vet $(GO_FLAGS) $(GO_PACKAGES)
+	$(GO) vet $(GO_PACKAGES)
 
-clean:
-	$(RM) ./kubeapps ./statik $(EMBEDDED_STATIC)
-	$(RM) -r $(GOPATH_TMP)
-
-.PHONY: default binary test fmt vet clean build-prep
+.PHONY: default all test-all test test-dashboard fmt vet
