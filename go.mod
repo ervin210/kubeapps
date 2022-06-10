@@ -47,7 +47,7 @@ require (
 	github.com/containerd/containerd v1.5.9
 	github.com/cppforlife/go-cli-ui v0.0.0-20200716203538-1e47f820817f
 	github.com/disintegration/imaging v1.6.2
-	github.com/distribution/distribution v2.7.1+incompatible
+	github.com/distribution/distribution v2.8.1+incompatible
 	github.com/ghodss/yaml v1.0.0
 	github.com/go-redis/redis/v8 v8.11.4
 	github.com/go-redis/redismock/v8 v8.0.6
