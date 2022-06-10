@@ -1,0 +1,13 @@
+#search {
+  margin-left: 0.3rem;
+  color: var(--cds-global-typography-color-500, #000);
+}
+
+#search input::placeholder {
+  color: var(--cds-global-typography-color-300, #454545);
+}
+
+header .search-box form {
+  margin-left: 1rem;
+  border-radius: 0.15rem;
+}

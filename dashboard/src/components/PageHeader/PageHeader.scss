@@ -1,0 +1,84 @@
+.kubeapps-header {
+  width: 100%;
+  height: auto;
+  padding-top: 0.3rem;
+  border-bottom: 2px solid var(--cds-alias-object-overlay-background, #f1f1f1);
+  background-color: var(--cds-alias-object-app-background, #fff);
+
+  .img-container {
+    display: contents;
+    align-items: center;
+
+    img {
+      max-width: 7rem;
+      max-height: 3rem;
+      margin: 0.2rem 0 0.2rem 0.6rem;
+    }
+  }
+
+  .kubeapps-header-content {
+    width: 100%;
+
+    .kubeapps-title-section {
+      display: flex;
+      min-height: 60px;
+
+      .kubeapps-title-block {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+
+        h1 {
+          padding-top: 0.2rem;
+          margin: 0;
+          margin-left: 0.6rem;
+        }
+
+        h3 {
+          margin-top: 0;
+          margin-left: 1rem;
+          font-weight: 500;
+        }
+
+        .kubeapps-header-subtitle {
+          margin-left: 1rem;
+
+          img {
+            max-width: 30px;
+            max-height: 1rem;
+            padding-right: 0.2rem;
+            margin: 0;
+          }
+
+          span {
+            padding-top: 0.1rem;
+            color: var(--cds-global-typography-color-400, #333);
+          }
+        }
+      }
+    }
+
+    .control-buttons {
+      display: flex;
+      height: 100%;
+      align-items: center;
+      justify-content: flex-end;
+
+      .header-button {
+        margin-left: 0.5rem;
+      }
+    }
+  }
+}
+
+.header-version {
+  &-label {
+    margin-right: 0.6rem;
+    color: var(--cds-global-typography-color-400, #333);
+    font-weight: 500;
+  }
+
+  & button {
+    color: var(--cds-global-typography-color-400, #333);
+  }
+}

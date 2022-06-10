@@ -1,0 +1,14 @@
+.cds-textarea-fix {
+  // Need to re-set the font property to avoid
+  // https://github.com/vmware/clarity/issues/5687
+  font: caption;
+}
+
+.ca-skip-tls {
+  margin-top: -1em;
+}
+
+/* stylelint-disable-next-line selector-class-pattern */
+.ace-solarized-dark .ace_comment {
+  font-style: normal;
+}

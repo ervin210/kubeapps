@@ -1,0 +1,19 @@
+.tooltip {
+  padding: 0 0.1rem;
+  border: 0;
+  background: none;
+
+  &-content {
+    visibility: hidden !important;
+
+    a:link {
+      color: var(--cds-global-color-blue-400, #2ec0ff);
+    }
+  }
+
+  &-open {
+    .tooltip-content {
+      visibility: visible !important;
+    }
+  }
+}

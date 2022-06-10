@@ -1,0 +1,929 @@
+syntax = "proto3";
+package kubeappsapis.core.packages.v1alpha1;
+option go_package = "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/any.proto";
+import "kubeappsapis/core/plugins/v1alpha1/plugins.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+// The core.packages defines the request and response types for API calls
+// interacting with packages, as well as the PackagesService to be implemented.
+
+// Each packages v1alpha1 plugin must implement at least the following rpcs:
+//
+service PackagesService {
+  rpc GetAvailablePackageSummaries(GetAvailablePackageSummariesRequest) returns (GetAvailablePackageSummariesResponse) {
+     option (google.api.http) = {
+       get: "/core/packages/v1alpha1/availablepackages"
+     };
+   }
+  rpc GetAvailablePackageDetail(GetAvailablePackageDetailRequest) returns (GetAvailablePackageDetailResponse) {
+    option (google.api.http) = {
+      get: "/core/packages/v1alpha1/availablepackages/plugin/{available_package_ref.plugin.name}/{available_package_ref.plugin.version}/c/{available_package_ref.context.cluster}/ns/{available_package_ref.context.namespace}/{available_package_ref.identifier}"
+    };
+  }
+  rpc GetAvailablePackageVersions(GetAvailablePackageVersionsRequest) returns (GetAvailablePackageVersionsResponse) {
+    option (google.api.http) = {
+      get: "/core/packages/v1alpha1/availablepackages/plugin/{available_package_ref.plugin.name}/{available_package_ref.plugin.version}/c/{available_package_ref.context.cluster}/ns/{available_package_ref.context.namespace}/{available_package_ref.identifier}/versions"
+    };
+  }
+
+  rpc GetInstalledPackageSummaries(GetInstalledPackageSummariesRequest) returns (GetInstalledPackageSummariesResponse) {
+    option (google.api.http) = {
+      get: "/core/packages/v1alpha1/installedpackages"
+    };
+  }
+
+  rpc GetInstalledPackageDetail(GetInstalledPackageDetailRequest) returns (GetInstalledPackageDetailResponse) {
+    option (google.api.http) = {
+      get: "/core/packages/v1alpha1/installedpackages/plugin/{installed_package_ref.plugin.name}/{installed_package_ref.plugin.version}/c/{installed_package_ref.context.cluster}/ns/{installed_package_ref.context.namespace}/{installed_package_ref.identifier}"
+    };
+  }
+
+  rpc CreateInstalledPackage(CreateInstalledPackageRequest) returns (CreateInstalledPackageResponse) {
+    option (google.api.http) = {
+      post: "/core/packages/v1alpha1/installedpackages"
+      body: "*"
+    };
+  }
+
+  rpc UpdateInstalledPackage(UpdateInstalledPackageRequest) returns (UpdateInstalledPackageResponse) {
+     option (google.api.http) = {
+       put: "/core/packages/v1alpha1/installedpackages/plugin/{installed_package_ref.plugin.name}/{installed_package_ref.plugin.version}/c/{installed_package_ref.context.cluster}/ns/{installed_package_ref.context.namespace}/{installed_package_ref.identifier}"
+       body: "*"
+      };
+  }
+
+  rpc DeleteInstalledPackage(DeleteInstalledPackageRequest) returns (DeleteInstalledPackageResponse) {
+    option (google.api.http) = {
+      delete: "/core/packages/v1alpha1/installedpackages/plugin/{installed_package_ref.plugin.name}/{installed_package_ref.plugin.version}/c/{installed_package_ref.context.cluster}/ns/{installed_package_ref.context.namespace}/{installed_package_ref.identifier}"
+    };
+  }
+
+  rpc GetInstalledPackageResourceRefs(GetInstalledPackageResourceRefsRequest) returns (GetInstalledPackageResourceRefsResponse) {
+    option (google.api.http) = {
+      get: "/core/packages/v1alpha1/installedpackages/plugin/{installed_package_ref.plugin.name}/{installed_package_ref.plugin.version}/c/{installed_package_ref.context.cluster}/ns/{installed_package_ref.context.namespace}/{installed_package_ref.identifier}/resourcerefs"
+    };
+  }
+}
+
+// Standard request and response messages for each required function are defined
+// below for import and re-use.
+
+// -- Start definitions of the request messages --
+
+// GetAvailablePackageSummariesRequest
+//
+// Request for GetAvailablePackageSummaries
+message GetAvailablePackageSummariesRequest {
+  // The context (cluster/namespace) for the request
+  Context context = 1;
+
+  // The filters used for the request
+  FilterOptions filter_options = 2;
+
+  // Pagination options specifying where to start and how many results to include.
+  PaginationOptions pagination_options = 3;
+}
+
+// GetAvailablePackageDetailRequest
+//
+// Request for GetAvailablePackageDetail
+message GetAvailablePackageDetailRequest {
+  // The information required to uniquely
+  // identify an available package
+  AvailablePackageReference available_package_ref = 1;
+
+  // Optional specific version (or version reference) to request.
+  // By default the latest version (or latest version matching the reference)
+  // will be returned.
+  string pkg_version = 2;
+}
+
+// GetAvailablePackageVersionsRequest
+//
+// Request for GetAvailablePackageVersions
+message GetAvailablePackageVersionsRequest {
+  // The information required to uniquely
+  // identify an available package
+  AvailablePackageReference available_package_ref = 1;
+
+  // Optional version reference for which full version history is required.  By
+  // default a summary of versions is returned as outlined in the response.
+  // Plugins can choose not to implement this and provide the summary only, it
+  // is provided for completeness only.
+  string pkg_version = 2;
+}
+
+// GetInstalledPackageSummariesRequest
+//
+// Request for GetInstalledPackageSummaries
+message GetInstalledPackageSummariesRequest {
+  // The context (cluster/namespace) for the request.
+  Context context = 1;
+
+  // Pagination options specifying where to start and how many results to include.
+  PaginationOptions pagination_options = 2;
+}
+
+// GetInstalledPackageDetailRequest
+//
+// Request for GetInstalledPackageDetail
+message GetInstalledPackageDetailRequest {
+  // The information required to uniquely
+  // identify an installed package
+  InstalledPackageReference installed_package_ref = 1;
+}
+
+// CreateInstalledPackageRequest
+//
+// Request for CreateInstalledPackage
+message CreateInstalledPackageRequest {
+  // A reference uniquely identifying the package available for installation.
+  AvailablePackageReference available_package_ref = 1;
+
+  // The target context where the package is intended to be installed.
+  Context target_context = 2;
+
+  // A user-provided name for the installed package (eg. project-x-db)
+  string name = 3;
+
+  // For helm this will be the exact version in VersionReference.version
+  // For other plugins we can extend the VersionReference as needed.
+  VersionReference pkg_version_reference = 4;
+
+  // An optional serialized values string to be included when templating a package
+  // in the format expected by the plugin. Included when the backend format doesn't
+  // use secrets or configmaps for values or supports both. These values are layered
+  // on top of any values refs above, when relevant.
+  string values = 5;
+
+  // An optional field for specifying data common to systems that reconcile
+  // the package on the cluster.
+  ReconciliationOptions reconciliation_options = 6;
+}
+
+// UpdateInstalledPackageRequest
+//
+// Request for UpdateInstalledPackage. The intent is to reach the desired state specified
+// by the fields in the request, while leaving other fields intact. This is a whole
+// object "Update" semantics rather than "Patch" semantics. The caller will provide the
+// values for the fields below, which will replace, or be overlayed onto, the
+// corresponding fields in the existing resource. For example, with the
+// UpdateInstalledPackageRequest, it is not possible to change just the 'package version
+// reference' without also specifying 'values' field. As a side effect, not specifying the
+// 'values' field in the request means there are no values specified in the desired state.
+// So the meaning of each field value is describing the desired state of the corresponding
+// field in the resource after the update operation has completed the renconciliation.
+message UpdateInstalledPackageRequest {
+  // A reference uniquely identifying the installed package being updated.
+  // Required
+  InstalledPackageReference installed_package_ref = 1;
+
+  // For helm this will be the exact version in VersionReference.version
+  // For fluxv2 this could be any semver constraint expression
+  // For other plugins we can extend the VersionReference as needed. Optional
+  VersionReference pkg_version_reference = 2;
+
+  // An optional serialized values string to be included when templating a
+  // package in the format expected by the plugin. Included when the backend
+  // format doesn't use secrets or configmaps for values or supports both.
+  // These values are layered on top of any values refs above, when
+  // relevant.
+  string values = 3;
+
+  // An optional field for specifying data common to systems that reconcile
+  // the package on the cluster.
+  ReconciliationOptions reconciliation_options = 4;
+}
+
+// DeleteInstalledPackageRequest
+//
+// Request for DeleteInstalledPackage
+message DeleteInstalledPackageRequest {
+  // A reference to uniquely identify the installed package to be deleted.
+  InstalledPackageReference installed_package_ref = 1;
+}
+
+// GetInstalledPackageResourceRefsRequest
+//
+// Request for GetInstalledPackageResourceRefs
+message GetInstalledPackageResourceRefsRequest {
+  InstalledPackageReference installed_package_ref = 1;
+}
+
+// -- Start definitions of the response messages --
+
+// GetAvailablePackageSummariesResponse
+//
+// Response for GetAvailablePackageSummaries
+message GetAvailablePackageSummariesResponse {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{"available_package_summaries": [{}]}'
+  // };
+
+  // Available packages summaries
+  //
+  // List of AvailablePackageSummary
+  repeated AvailablePackageSummary available_package_summaries = 1;
+
+  // Next page token
+  //
+  // This field represents the pagination token to retrieve the next page of
+  // results. If the value is "", it means no further results for the request.
+  string next_page_token = 2;
+
+  // Categories
+  //
+  // This optional field contains the distinct category names considering the FilterOptions.
+  repeated string categories = 3;
+}
+
+// GetAvailablePackageDetailResponse
+//
+// Response for GetAvailablePackageDetail
+message GetAvailablePackageDetailResponse {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{"available_package_detail": [{}]}'
+  // };
+
+  // Available package detail
+  //
+  // The requested AvailablePackageDetail
+  AvailablePackageDetail available_package_detail = 1;
+}
+
+// GetAvailablePackageVersionsResponse
+//
+// Response for GetAvailablePackageVersions
+message GetAvailablePackageVersionsResponse {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{"package_app_versions": [{}]}'
+  // };
+
+  // Package app versions
+  //
+  // By default (when version_query is empty or ignored) the response
+  // should contain an ordered summary of versions including the most recent three
+  // patch versions of the most recent three minor versions of the most recent three
+  // major versions when available, something like:
+  // [
+  //   { pkg_version: "10.3.19", app_version: "2.16.8" },
+  //   { pkg_version: "10.3.18", app_version: "2.16.8" },
+  //   { pkg_version: "10.3.17", app_version: "2.16.7" },
+  //   { pkg_version: "10.2.6", app_version: "2.15.3" },
+  //   { pkg_version: "10.2.5", app_version: "2.15.2" },
+  //   { pkg_version: "10.2.4", app_version: "2.15.2" },
+  //   { pkg_version: "10.1.8", app_version: "2.13.5" },
+  //   { pkg_version: "10.1.7", app_version: "2.13.5" },
+  //   { pkg_version: "10.1.6", app_version: "2.13.5" },
+  //   { pkg_version: "9.5.4", app_version: "2.8.9" },
+  //   ...
+  //   { pkg_version: "8.2.5", app_version: "1.19.5" },
+  //   ...
+  // ]
+  // If a version_query is present and the plugin chooses to support it,
+  // the full history of versions matching the version query should be returned.
+  repeated PackageAppVersion package_app_versions = 1;
+}
+
+// GetInstalledPackageSummariesResponse
+//
+// Response for GetInstalledPackageSummaries
+message GetInstalledPackageSummariesResponse {
+  // Installed packages summaries
+  //
+  // List of InstalledPackageSummary
+  repeated InstalledPackageSummary installed_package_summaries = 1;
+
+  // Next page token
+  //
+  // This field represents the pagination token to retrieve the next page of
+  // results. If the value is "", it means no further results for the request.
+  string next_page_token = 2;
+}
+
+// GetInstalledPackageDetailResponse
+//
+// Response for GetInstalledPackageDetail
+message GetInstalledPackageDetailResponse {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{"installed_package_detail": [{}]}'
+  // };
+
+  // InstalledPackageDetail
+  //
+  // The requested InstalledPackageDetail
+  InstalledPackageDetail installed_package_detail = 1;
+}
+
+// CreateInstalledPackageResponse
+//
+// Response for CreateInstalledPackage
+message CreateInstalledPackageResponse {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{"installed_package_ref": {}}'
+  // };
+
+  InstalledPackageReference installed_package_ref = 1;
+}
+
+// UpdateInstalledPackageResponse
+//
+// Response for UpdateInstalledPackage
+message UpdateInstalledPackageResponse {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{"installed_package_ref": {}}'
+  // };
+
+  InstalledPackageReference installed_package_ref = 1;
+}
+
+// DeleteInstalledPackageResponse
+//
+// Response for DeleteInstalledPackage
+message DeleteInstalledPackageResponse {
+  // For future extensibility only.
+}
+
+// GetInstalledPackageResourceRefsResponse
+//
+// Response for GetInstalledPackageResourceRefs
+message GetInstalledPackageResourceRefsResponse {
+  Context context = 1;
+  repeated ResourceRef resource_refs = 2;
+}
+
+// -- Start definitions used in the responses  --
+
+// AvailablePackageSummary
+//
+// An AvailablePackageSummary provides a summary of a package available for installation
+// useful when aggregating many available packages.
+message AvailablePackageSummary {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{}'
+  // };
+
+  // Available package reference
+  //
+  // A reference uniquely identifying the package.
+  AvailablePackageReference available_package_ref = 1;
+
+  // Available package name
+  //
+  // The name of the available package
+  string name = 2;
+
+  // Latest available version
+  //
+  // The latest version available for this package. Often expected when viewing
+  // a summary of many available packages.
+  PackageAppVersion latest_version = 3;
+
+  // Available package Icon URL
+  //
+  // A url for an icon.
+  string icon_url = 4;
+
+  // Available package display name
+  //
+  // A name as displayed to users
+  string display_name = 5;
+
+  // Available package short description
+  //
+  // A short description of the app provided by the package
+  string short_description = 6;
+
+  // Available package categories
+  //
+  // A user-facing list of category names useful for creating richer user interfaces.
+  // Plugins can choose not to implement this
+  repeated string categories = 7;
+}
+
+// AvailablePackageDetail
+//
+// An AvailablePackageDetail provides additional details required when
+// inspecting an individual package.
+message AvailablePackageDetail {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{}'
+  // };
+
+  // Available package reference
+  //
+  // A reference uniquely identifying the package.
+  AvailablePackageReference available_package_ref = 1;
+
+  // Available package name
+  //
+  // The name of the available package
+  string name = 2;
+
+  // Available version
+  //
+  // The version of the package and application.
+  PackageAppVersion version = 3;
+
+  // the url of the package repository that contains this package
+  string repo_url = 4;
+
+  // the url of the “home” for the package
+  string home_url = 5;
+
+  // Available package icon URL
+  //
+  // A url for an icon.
+  string icon_url = 6;
+
+  // Available package display name
+  //
+  // A name as displayed to users
+  string display_name = 7;
+
+  // Available package short description
+  //
+  // A short description of the app provided by the package
+  string short_description = 8;
+
+  // Available package long description
+  //
+  // A longer description of the package, a few sentences.
+  string long_description = 9;
+
+  // Available package readme
+  //
+  // A longer README with potentially pages of formatted Markdown.
+  string readme = 10;
+
+  // Available package default values
+  //
+  // An example of default values used during package templating that can serve
+  // as documentation or a starting point for user customization.
+  string default_values = 11;
+
+  // Available package values schema
+  //
+  // An optional openapi/json schema that can be used to validate a user-provided values.
+
+  string values_schema = 12;
+
+  // source urls for the package
+  repeated string source_urls = 13;
+
+  // Available package maintainers
+  //
+  // List of Maintainer
+  repeated Maintainer maintainers = 14;
+
+  // Available package categories
+  //
+  // A user-facing list of category names useful for creating richer user interfaces.
+  // Plugins can choose not to implement this
+  repeated string categories = 15;
+
+  // Custom data added by the plugin
+  //
+  // A plugin can define custom details for data which is not yet, or never will
+  // be specified in the core.packaging.CreateInstalledPackageRequest fields. The use
+  // of an `Any` field means that each plugin can define the structure of this
+  // message as required, while still satisfying the core interface.
+  // See https://developers.google.com/protocol-buffers/docs/proto3#any
+  google.protobuf.Any custom_detail = 16;
+}
+
+// InstalledPackageSummary
+//
+// An InstalledPackageSummary provides a summary of an installed package
+// useful when aggregating many installed packages.
+message InstalledPackageSummary {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{}'
+  // };
+
+  // InstalledPackageReference
+  //
+  // A reference uniquely identifying the package.
+  InstalledPackageReference installed_package_ref = 1;
+
+  // Name
+  //
+  // A name given to the installation of the package (eg. "my-postgresql-for-testing").
+  string name = 2;
+
+  // PkgVersionReference
+  //
+  // The package version reference defines a version or constraint limiting
+  // matching package versions.
+  VersionReference pkg_version_reference = 3;
+
+  // CurrentVersion
+  //
+  // The current version of the package being reconciled, which may be
+  // in one of these states:
+  //  - has been successfully installed/upgraded or
+  //  - is currently being installed/upgraded or
+  //  - has failed to install/upgrade
+  PackageAppVersion current_version = 4;
+
+  // Installed package icon URL
+  //
+  // A url for an icon.
+  string icon_url = 5;
+
+  // PackageDisplayName
+  //
+  // The package name as displayed to users (provided by the package, eg. "PostgreSQL")
+  string pkg_display_name = 6;
+
+  // ShortDescription
+  //
+  // A short description of the package (provided by the package)
+  string short_description = 7;
+
+  // LatestMatchingVersion
+  //
+  // Only non-empty if an available upgrade matches the specified pkg_version_reference.
+  // For example, if the pkg_version_reference is ">10.3.0 < 10.4.0" and 10.3.1
+  // is installed, then:
+  //   * if 10.3.2 is available, latest_matching_version should be 10.3.2, but
+  //   * if 10.4 is available while >10.3.1 is not, this should remain empty.
+  PackageAppVersion latest_matching_version = 8;
+
+  // LatestVersion
+  //
+  // The latest version available for this package, regardless of the pkg_version_reference.
+  PackageAppVersion latest_version = 9;
+
+  // Status
+  //
+  // The current status of the installed package.
+  InstalledPackageStatus status = 10;
+}
+
+// InstalledPackageDetail
+//
+// An InstalledPackageDetail includes details about the installed package that are
+// typically useful when presenting a single installed package.
+message InstalledPackageDetail {
+  // InstalledPackageReference
+  //
+  // A reference uniquely identifying the installed package.
+  InstalledPackageReference installed_package_ref = 1;
+
+  // PkgVersionReference
+  //
+  // The package version reference defines a version or constraint limiting
+  // matching package versions.
+  VersionReference pkg_version_reference = 2;
+
+  // Installed package name
+  //
+  // The name given to the installed package
+  string name = 3;
+
+  // CurrentVersion
+  //
+  // The version of the package which is currently installed.
+  PackageAppVersion current_version = 4;
+
+  // ValuesApplied
+  //
+  // The values applied currently for the installed package.
+  string values_applied = 5;
+
+  // ReconciliationOptions
+  //
+  // An optional field specifying data common to systems that reconcile
+  // the package installation on the cluster asynchronously. In particular,
+  // this specifies the service account used to perform the reconcilliation.
+  ReconciliationOptions reconciliation_options = 6;
+
+  // Status
+  //
+  // The current status of the installed package.
+  InstalledPackageStatus status = 7;
+
+  // PostInstallationNotes
+  //
+  // Optional notes generated by package and intended for the user post installation.
+  string post_installation_notes = 8;
+
+  // Available package reference
+  //
+  // A reference to the available package for this installation.
+  // Useful to lookup the package display name, icon and other info.
+  AvailablePackageReference available_package_ref = 9;
+
+  // LatestMatchingVersion
+  //
+  // Only non-empty if an available upgrade matches the specified pkg_version_reference.
+  // For example, if the pkg_version_reference is ">10.3.0 < 10.4.0" and 10.3.1
+  // is installed, then:
+  //   * if 10.3.2 is available, latest_matching_version should be 10.3.2, but
+  //   * if 10.4 is available while >10.3.1 is not, this should remain empty.
+  PackageAppVersion latest_matching_version = 10;
+
+  // LatestVersion
+  //
+  // The latest version available for this package, regardless of the pkg_version_reference.
+  PackageAppVersion latest_version = 11;
+
+  // Custom data added by the plugin
+  //
+  // A plugin can define custom details for data which is not yet, or never will
+  // be specified in the core.packaging.CreateInstalledPackageRequest fields. The use
+  // of an `Any` field means that each plugin can define the structure of this
+  // message as required, while still satisfying the core interface.
+  // See https://developers.google.com/protocol-buffers/docs/proto3#any
+  google.protobuf.Any custom_detail = 14;
+}
+
+// -- Start other definitions  --
+
+// Context
+//
+// A Context specifies the context of the message
+message Context {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{}'
+  // };
+
+  // Cluster
+  //
+  // A cluster name can be provided to target a specific cluster if multiple
+  // clusters are configured, otherwise all clusters will be assumed.
+  string cluster = 1;
+
+  // Namespace
+  //
+  // A namespace must be provided if the context of the operation is for a resource
+  // or resources in a particular namespace.
+  // For requests to list items, not including a namespace here implies that the context
+  // for the request is everything the requesting user can read, though the result can
+  // be filtered by any filtering options of the request. Plugins may choose to return
+  // Unimplemented for some queries for which we do not yet have a need.
+  string namespace = 2;
+}
+
+// AvailablePackageReference
+//
+// An AvailablePackageReference has the minimum information required to uniquely
+// identify an available package. This is re-used on the summary and details of an
+// available package.
+message AvailablePackageReference {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{}'
+  // };
+
+  // Available package context
+  //
+  // The context (cluster/namespace) for the package.
+  Context context = 1;
+
+  // Available package identifier
+  //
+  // The fully qualified identifier for the available package
+  // (ie. a unique name for the context). For some packaging systems
+  // (particularly those where an available package is backed by a CR) this
+  // will just be the name, but for others such as those where an available
+  // package is not backed by a CR (eg. standard helm) it may be necessary
+  // to include the repository in the name or even the repo namespace
+  // to ensure this is unique.
+  // For example two helm repositories can define
+  // an "apache" chart that is available globally, the names would need to
+  // encode that to be unique (ie. "repoA:apache" and "repoB:apache").
+  string identifier = 2;
+
+  // Plugin for the available package
+  //
+  // The plugin used to interact with this available package.
+  // This field should be omitted when the request is in the context of a specific plugin.
+  kubeappsapis.core.plugins.v1alpha1.Plugin plugin = 3;
+}
+
+// Maintainer
+//
+// Maintainers for the package.
+message Maintainer {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{}'
+  // };
+
+  // Maintainer name
+  //
+  // A maintainer name
+  string name = 1;
+
+  // Maintainer email
+  //
+  // A maintainer email
+  string email = 2;
+  }
+
+  // FilterOptions
+  //
+  // FilterOptions available when requesting summaries
+  message FilterOptions {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{}'
+  // };
+
+    // Text query
+    //
+    // Text query for the request
+    string query = 1;
+
+    // Categories
+    //
+    // Collection of categories for the request
+    repeated string categories = 2;
+
+    // Repositories
+    //
+    // Collection of repositories where the packages belong to
+    repeated string repositories = 3;
+
+    // Package version
+    //
+    // Package version for the request
+    string pkg_version = 4;
+
+    // App version
+    //
+    // Packaged app version for the request
+    string app_version = 5;
+  };
+
+// PaginationOptions
+//
+// The PaginationOptions based on the example proto at:
+// https://cloud.google.com/apis/design/design_patterns#list_pagination
+// just encapsulated in a message so it can be reused on different request messages.
+message PaginationOptions {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{}'
+  // };
+
+  // Page token
+  //
+  // The client uses this field to request a specific page of the list results.
+  string page_token = 1;
+
+  // Page size
+  //
+  // Clients use this field to specify the maximum number of results to be
+  // returned by the server. The server may further constrain the maximum number
+  // of results returned in a single page. If the page_size is 0, the server
+  // will decide the number of results to be returned.
+  int32 page_size = 2;
+}
+
+// InstalledPackageReference
+//
+// An InstalledPackageReference has the minimum information required to uniquely
+// identify an installed package.
+message InstalledPackageReference {
+  // TODO: add example for API docs
+  // option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema) = {
+  //   example: '{}'
+  // };
+
+  // Installed package context
+  //
+  // The context (cluster/namespace) for the package.
+  Context context = 1;
+
+  // The fully qualified identifier for the installed package
+  // (ie. a unique name for the context).
+  string identifier = 2;
+
+  // The plugin used to identify and interact with the installed package.
+  // This field can be omitted when the request is in the context of a specific plugin.
+  kubeappsapis.core.plugins.v1alpha1.Plugin plugin = 3;
+}
+
+// VersionReference
+//
+// A VersionReference defines a version or constraint limiting matching versions.
+// The reason it is a separate message is so that in the future we can add other
+// fields as necessary (such as something similar to Carvel's `prereleases` option
+// to its versionSelection).
+message VersionReference {
+  // Version
+  //
+  // The format of the version constraint depends on the backend. For example,
+  // for a flux v2 and Carvel it’s a semver expression, such as ">=10.3 < 10.4"
+  string version = 1;
+}
+
+// InstalledPackageStatus
+//
+// An InstalledPackageStatus reports on the current status of the installation.
+message InstalledPackageStatus {
+  // Ready
+  //
+  // An indication of whether the installation is ready or not
+  bool ready = 1;
+
+  // StatusReason
+  //
+  // Generic reasons why an installed package may be ready or not.
+  // These should make sense across different packaging plugins.
+  enum StatusReason {
+    STATUS_REASON_UNSPECIFIED = 0;
+    STATUS_REASON_INSTALLED = 1;
+    STATUS_REASON_UNINSTALLED = 2;
+    STATUS_REASON_FAILED = 3;
+    STATUS_REASON_PENDING = 4;
+  }
+
+  // Reason
+  //
+  // An enum indicating the reason for the current status.
+  StatusReason reason = 2;
+
+  // UserReason
+  //
+  // Optional text to return for user context, which may be plugin specific.
+  string user_reason = 3;
+}
+
+// ReconciliationOptions
+//
+// ReconciliationOptions enable specifying standard fields for backends that continuously
+// reconcile a package install as new matching versions are released. Most of the naming
+// is from the flux HelmReleaseSpec though it maps directly to equivalent fields on Carvel's
+// InstalledPackage.
+message ReconciliationOptions {
+  // Reconciliation Interval
+  //
+  // The interval with which the package is checked for reconciliation (in seconds)
+  int32 interval = 1;
+
+  // Suspend
+  //
+  // Whether reconciliation should be suspended until otherwise enabled.
+  // This can be utilized to e.g. temporarily ignore chart changes, and
+  // prevent a Helm release from getting upgraded
+  bool suspend = 2;
+
+  // ServiceAccountName
+  //
+  // A name for a service account in the same namespace which should be used
+  // to perform the reconciliation.
+  string service_account_name = 3;
+}
+
+// Package AppVersion
+//
+// PackageAppVersion conveys both the package version and the packaged app version.
+message PackageAppVersion {
+  // Package version
+  //
+  // Version of the package itself
+  string pkg_version = 1;
+
+  // Application version
+  //
+  // Version of the packaged application
+  string app_version = 2;
+};
+
+// Resource reference
+//
+// A reference to a Kubernetes resource related to a specific installed package.
+// The context (cluster) for each resource is that of the related
+// installed package.
+message ResourceRef {
+  // The APIVersion directly from the resource has the group and version, eg. "apps/v1"
+  // or just the version for core resources.
+  string api_version = 1;
+  // The Kind directly from the templated manifest. Together with the APIVersion this
+  // forms the GroupVersionKind.
+  string kind = 2;
+  // The name of the specific resource in the context of the installed package.
+  string name = 3;
+  // The namespace of the specific resource in the context of the installed
+  // package. In most cases this will be identical to the namespace of the
+  // installed package. Exceptions will be non-namespaced resources and packages
+  // that install resources in other namespaces for special reasons.
+  string namespace = 4;
+}

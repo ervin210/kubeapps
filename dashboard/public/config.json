@@ -1,0 +1,18 @@
+{
+  "kubeappsCluster": "default",
+  "kubeappsNamespace": "kubeapps",
+  "globalReposNamespace": "kubeapps",
+  "appVersion": "DEVEL",
+  "authProxyEnabled": false,
+  "authProxySkipLoginPage": false,
+  "oauthLoginURI": "/oauth2/start",
+  "oauthLogoutURI": "/oauth2/sign_out",
+  "clusters": ["default"],
+  "featureFlags": {
+    "operators": false
+  },
+  "theme": "light",
+  "remoteComponentsUrl": "",
+  "customAppViews": [],
+  "skipAvailablePackageDetails": false
+}

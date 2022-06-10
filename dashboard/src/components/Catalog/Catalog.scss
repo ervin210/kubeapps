@@ -1,0 +1,39 @@
+.empty-catalog {
+  width: 100%;
+  height: calc(100vh - 6rem);
+  text-align: center;
+
+  cds-icon {
+    width: 4rem;
+    height: 4rem;
+    margin-top: 2rem;
+  }
+
+  cds-button {
+    margin-top: 2rem;
+  }
+
+  p {
+    margin-top: 0.6rem;
+  }
+}
+
+.scroll-handler {
+  min-height: 50vh;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+
+.catalog-container {
+  padding-bottom: 5vh;
+}
+
+.end-page-message {
+  width: 100%;
+  margin-top: 2rem;
+  text-align: center;
+}
+
+.kubeapps-main-container .content-area {
+  overflow-y: scroll;
+}

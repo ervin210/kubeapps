@@ -1,3 +1,11 @@
-kubeapps
-statik
 *.*~
+telepresence.log
+devel/*
+
+# OSX
+.DS_Store
+
+dashboard/src/locales/
+
+dashboard/public/clr-ui-dark.min.css*
+dashboard/public/clr-ui.min.css*
