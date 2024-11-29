@@ -1,7 +1,11 @@
+// Copyright 2018-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import actions from "actions";
 import * as ReactRedux from "react-redux";
 import { NavLink } from "react-router-dom";
-import { getStore, mountWrapper } from "shared/specs/mountWrapper";
+import { getStore, initialState, mountWrapper } from "shared/specs/mountWrapper";
+import { IStoreState } from "shared/types";
 import { app } from "shared/url";
 import Header from "./Header";
 
@@ -22,18 +26,22 @@ afterEach(() => {
 });
 
 const defaultState = {
+  ...initialState,
   clusters: {
+    ...initialState.clusters,
     currentCluster: "default",
     clusters: {
+      ...initialState.clusters.clusters,
       default: {
+        ...initialState.clusters.clusters[initialState.clusters.currentCluster],
         currentNamespace: "default",
         namespaces: ["default", "other"],
       },
     },
   },
-  auth: { authenticated: true },
-  config: { appVersion: "v2.0.0" },
-};
+  auth: { ...initialState.auth, authenticated: true },
+  config: { ...initialState.config, appVersion: "v2.0.0" },
+} as IStoreState;
 
 it("fetch namespaces and the ability to create them", () => {
   mountWrapper(getStore(defaultState), <Header />);
@@ -60,7 +68,7 @@ it("should skip the links if it's not authenticated", () => {
     getStore({
       ...defaultState,
       auth: { authenticated: false },
-    }),
+    } as Partial<IStoreState>),
     <Header />,
   );
   const items = wrapper.find(".nav-link");
@@ -72,15 +80,18 @@ it("should skip the links if the namespace info is not available", () => {
     getStore({
       ...defaultState,
       clusters: {
+        ...initialState.clusters,
         currentCluster: "default",
         clusters: {
+          ...initialState.clusters.clusters,
           default: {
+            ...initialState.clusters.clusters[initialState.clusters.currentCluster],
             currentNamespace: "",
             namespaces: [],
           },
         },
       },
-    }),
+    } as Partial<IStoreState>),
     <Header />,
   );
   const items = wrapper.find(".nav-link");

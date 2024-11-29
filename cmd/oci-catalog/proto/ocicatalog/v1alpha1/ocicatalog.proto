@@ -1,0 +1,72 @@
+// Copyright 2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+package ocicatalog.v1alpha1;
+option go_package = "github.com/vmware-tanzu/kubeapps/cmd/oci-catalog/gen/catalog/v1alpha1";
+
+// The OCICatalogService defines the two RPCs for listing repositories and listing tags
+// for a repository.
+service OCICatalogService {
+    rpc ListRepositoriesForRegistry(ListRepositoriesForRegistryRequest) returns (stream Repository);
+    rpc ListTagsForRepository(ListTagsForRepositoryRequest) returns (stream Tag);
+}
+
+// RegistryProvider
+//
+// Optionally specify the registry provider when known.
+enum RegistryProvider {
+    REGISTRY_PROVIDER_UNSPECIFIED = 0;
+    REGISTRY_PROVIDER_DOCKER_HUB = 1;
+    REGISTRY_PROVIDER_HARBOR = 2;
+}
+
+// ListRepositoriesForRegistryRequest
+//
+// Request for listing repositories of a registry or a namespaced registry.
+message ListRepositoriesForRegistryRequest {
+    // The OCI registry for which the repositories should be listed.
+    string registry = 1;
+
+    // An optional namespace within which to list repositories.
+    string namespace = 2;
+
+    // An optional list of content types to filter.
+    repeated string content_types = 3;
+
+    // Perhaps switch to be a one-of, so when testing, can pass a token
+    // directly? Though wouldn't want this to be used or available in prod.
+    string kubernetes_secret = 4;
+
+    // In self-hosted registry examples, such as a self-hosted Harbor registry,
+    // there will be no information in the URL that can be used to determine
+    // the provider (and hence, which strategy / API to use). The optional
+    // registry_provider field can be used to explicitly identify the provider.
+    RegistryProvider registry_provider = 5;
+}
+
+// Repository
+//
+// Uniquely identifies an OCI repository.
+message Repository {
+    string registry = 1;
+    string namespace = 2;
+    string name = 3;
+}
+
+// ListTagsForRepositoryRequest
+//
+// Identifies the repository for which tags are to be listed. Can be
+// extended in the future with other options.
+message ListTagsForRepositoryRequest {
+    Repository repository = 1;
+
+    RegistryProvider registry_provider = 2;
+}
+
+// Tag
+//
+// Simple tag for a repository.
+message Tag {
+    string name = 1;
+}

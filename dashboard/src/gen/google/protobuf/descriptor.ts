@@ -118,7 +118,6 @@ export interface FieldDescriptorProto {
    * For booleans, "true" or "false".
    * For strings, contains the default text contents (not escaped in any way).
    * For bytes, contains the C escaped value.  All bytes >= 128 are escaped.
-   * TODO(kenton):  Base-64 encode?
    */
   defaultValue: string;
   /**
@@ -305,8 +304,9 @@ export function fieldDescriptorProto_TypeToJSON(object: FieldDescriptorProto_Typ
       return "TYPE_SINT32";
     case FieldDescriptorProto_Type.TYPE_SINT64:
       return "TYPE_SINT64";
+    case FieldDescriptorProto_Type.UNRECOGNIZED:
     default:
-      return "UNKNOWN";
+      return "UNRECOGNIZED";
   }
 }
 
@@ -344,8 +344,9 @@ export function fieldDescriptorProto_LabelToJSON(object: FieldDescriptorProto_La
       return "LABEL_REQUIRED";
     case FieldDescriptorProto_Label.LABEL_REPEATED:
       return "LABEL_REPEATED";
+    case FieldDescriptorProto_Label.UNRECOGNIZED:
     default:
-      return "UNKNOWN";
+      return "UNRECOGNIZED";
   }
 }
 
@@ -576,8 +577,9 @@ export function fileOptions_OptimizeModeToJSON(object: FileOptions_OptimizeMode)
       return "CODE_SIZE";
     case FileOptions_OptimizeMode.LITE_RUNTIME:
       return "LITE_RUNTIME";
+    case FileOptions_OptimizeMode.UNRECOGNIZED:
     default:
-      return "UNKNOWN";
+      return "UNRECOGNIZED";
   }
 }
 
@@ -692,7 +694,6 @@ export interface FieldOptions {
    * call from multiple threads concurrently, while non-const methods continue
    * to require exclusive access.
    *
-   *
    * Note that implementations may choose not to check required fields within
    * a lazy sub-message.  That is, calling IsInitialized() on the outer message
    * may return true even if the inner message has missing required fields.
@@ -703,8 +704,20 @@ export interface FieldOptions {
    * implementation must either *always* check its required fields, or *never*
    * check its required fields, regardless of whether or not the message has
    * been parsed.
+   *
+   * As of 2021, lazy does no correctness checks on the byte stream during
+   * parsing.  This may lead to crashes if and when an invalid byte stream is
+   * finally parsed upon access.
+   *
+   * TODO(b/211906113):  Enable validation on lazy fields.
    */
   lazy: boolean;
+  /**
+   * unverified_lazy does no correctness checks on the byte stream. This should
+   * only be used where lazy with verification is prohibitive for performance
+   * reasons.
+   */
+  unverifiedLazy: boolean;
   /**
    * Is this field deprecated?
    * Depending on the target platform, this can emit Deprecated annotations
@@ -752,8 +765,9 @@ export function fieldOptions_CTypeToJSON(object: FieldOptions_CType): string {
       return "CORD";
     case FieldOptions_CType.STRING_PIECE:
       return "STRING_PIECE";
+    case FieldOptions_CType.UNRECOGNIZED:
     default:
-      return "UNKNOWN";
+      return "UNRECOGNIZED";
   }
 }
 
@@ -793,8 +807,9 @@ export function fieldOptions_JSTypeToJSON(object: FieldOptions_JSType): string {
       return "JS_STRING";
     case FieldOptions_JSType.JS_NUMBER:
       return "JS_NUMBER";
+    case FieldOptions_JSType.UNRECOGNIZED:
     default:
-      return "UNKNOWN";
+      return "UNRECOGNIZED";
   }
 }
 
@@ -901,8 +916,9 @@ export function methodOptions_IdempotencyLevelToJSON(
       return "NO_SIDE_EFFECTS";
     case MethodOptions_IdempotencyLevel.IDEMPOTENT:
       return "IDEMPOTENT";
+    case MethodOptions_IdempotencyLevel.UNRECOGNIZED:
     default:
-      return "UNKNOWN";
+      return "UNRECOGNIZED";
   }
 }
 
@@ -932,8 +948,8 @@ export interface UninterpretedOption {
  * The name of the uninterpreted option.  Each string represents a segment in
  * a dot-separated name.  is_extension is true iff a segment represents an
  * extension (denoted with parentheses in options specs in .proto files).
- * E.g.,{ ["foo", false], ["bar.baz", true], ["qux", false] } represents
- * "foo.(bar.baz).qux".
+ * E.g.,{ ["foo", false], ["bar.baz", true], ["moo", false] } represents
+ * "foo.(bar.baz).moo".
  */
 export interface UninterpretedOption_NamePart {
   namePart: string;
@@ -999,8 +1015,8 @@ export interface SourceCodeInfo_Location {
    * location.
    *
    * Each element is a field number or an index.  They form a path from
-   * the root FileDescriptorProto to the place where the definition.  For
-   * example, this path:
+   * the root FileDescriptorProto to the place where the definition occurs.
+   * For example, this path:
    *   [ 4, 3, 2, 7, 1 ]
    * refers to:
    *   file.message_type(3)  // 4, 3
@@ -1056,13 +1072,13 @@ export interface SourceCodeInfo_Location {
    *   // Comment attached to baz.
    *   // Another line attached to baz.
    *
-   *   // Comment attached to qux.
+   *   // Comment attached to moo.
    *   //
-   *   // Another line attached to qux.
-   *   optional double qux = 4;
+   *   // Another line attached to moo.
+   *   optional double moo = 4;
    *
    *   // Detached comment for corge. This is not leading or trailing comments
-   *   // to qux or corge because there are blank lines separating it from
+   *   // to moo or corge because there are blank lines separating it from
    *   // both.
    *
    *   // Detached comment for corge paragraph 2.
@@ -1162,6 +1178,10 @@ export const FileDescriptorSet = {
       obj.file = [];
     }
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<FileDescriptorSet>, I>>(base?: I): FileDescriptorSet {
+    return FileDescriptorSet.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<FileDescriptorSet>, I>>(object: I): FileDescriptorSet {
@@ -1380,6 +1400,10 @@ export const FileDescriptorProto = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<FileDescriptorProto>, I>>(base?: I): FileDescriptorProto {
+    return FileDescriptorProto.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<FileDescriptorProto>, I>>(
     object: I,
   ): FileDescriptorProto {
@@ -1586,6 +1610,10 @@ export const DescriptorProto = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<DescriptorProto>, I>>(base?: I): DescriptorProto {
+    return DescriptorProto.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<DescriptorProto>, I>>(object: I): DescriptorProto {
     const message = createBaseDescriptorProto();
     message.name = object.name ?? "";
@@ -1669,6 +1697,12 @@ export const DescriptorProto_ExtensionRange = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<DescriptorProto_ExtensionRange>, I>>(
+    base?: I,
+  ): DescriptorProto_ExtensionRange {
+    return DescriptorProto_ExtensionRange.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<DescriptorProto_ExtensionRange>, I>>(
     object: I,
   ): DescriptorProto_ExtensionRange {
@@ -1736,6 +1770,12 @@ export const DescriptorProto_ReservedRange = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<DescriptorProto_ReservedRange>, I>>(
+    base?: I,
+  ): DescriptorProto_ReservedRange {
+    return DescriptorProto_ReservedRange.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<DescriptorProto_ReservedRange>, I>>(
     object: I,
   ): DescriptorProto_ReservedRange {
@@ -1794,6 +1834,10 @@ export const ExtensionRangeOptions = {
       obj.uninterpretedOption = [];
     }
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ExtensionRangeOptions>, I>>(base?: I): ExtensionRangeOptions {
+    return ExtensionRangeOptions.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<ExtensionRangeOptions>, I>>(
@@ -1941,6 +1985,10 @@ export const FieldDescriptorProto = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<FieldDescriptorProto>, I>>(base?: I): FieldDescriptorProto {
+    return FieldDescriptorProto.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<FieldDescriptorProto>, I>>(
     object: I,
   ): FieldDescriptorProto {
@@ -2014,6 +2062,10 @@ export const OneofDescriptorProto = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<OneofDescriptorProto>, I>>(base?: I): OneofDescriptorProto {
+    return OneofDescriptorProto.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<OneofDescriptorProto>, I>>(
     object: I,
   ): OneofDescriptorProto {
@@ -2028,13 +2080,7 @@ export const OneofDescriptorProto = {
 };
 
 function createBaseEnumDescriptorProto(): EnumDescriptorProto {
-  return {
-    name: "",
-    value: [],
-    options: undefined,
-    reservedRange: [],
-    reservedName: [],
-  };
+  return { name: "", value: [], options: undefined, reservedRange: [], reservedName: [] };
 }
 
 export const EnumDescriptorProto = {
@@ -2130,6 +2176,10 @@ export const EnumDescriptorProto = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<EnumDescriptorProto>, I>>(base?: I): EnumDescriptorProto {
+    return EnumDescriptorProto.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<EnumDescriptorProto>, I>>(
     object: I,
   ): EnumDescriptorProto {
@@ -2200,6 +2250,12 @@ export const EnumDescriptorProto_EnumReservedRange = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<EnumDescriptorProto_EnumReservedRange>, I>>(
+    base?: I,
+  ): EnumDescriptorProto_EnumReservedRange {
+    return EnumDescriptorProto_EnumReservedRange.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<EnumDescriptorProto_EnumReservedRange>, I>>(
     object: I,
   ): EnumDescriptorProto_EnumReservedRange {
@@ -2267,6 +2323,12 @@ export const EnumValueDescriptorProto = {
     message.options !== undefined &&
       (obj.options = message.options ? EnumValueOptions.toJSON(message.options) : undefined);
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<EnumValueDescriptorProto>, I>>(
+    base?: I,
+  ): EnumValueDescriptorProto {
+    return EnumValueDescriptorProto.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<EnumValueDescriptorProto>, I>>(
@@ -2346,6 +2408,12 @@ export const ServiceDescriptorProto = {
     message.options !== undefined &&
       (obj.options = message.options ? ServiceOptions.toJSON(message.options) : undefined);
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ServiceDescriptorProto>, I>>(
+    base?: I,
+  ): ServiceDescriptorProto {
+    return ServiceDescriptorProto.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<ServiceDescriptorProto>, I>>(
@@ -2450,6 +2518,10 @@ export const MethodDescriptorProto = {
     message.clientStreaming !== undefined && (obj.clientStreaming = message.clientStreaming);
     message.serverStreaming !== undefined && (obj.serverStreaming = message.serverStreaming);
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<MethodDescriptorProto>, I>>(base?: I): MethodDescriptorProto {
+    return MethodDescriptorProto.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<MethodDescriptorProto>, I>>(
@@ -2726,6 +2798,10 @@ export const FileOptions = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<FileOptions>, I>>(base?: I): FileOptions {
+    return FileOptions.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<FileOptions>, I>>(object: I): FileOptions {
     const message = createBaseFileOptions();
     message.javaPackage = object.javaPackage ?? "";
@@ -2848,6 +2924,10 @@ export const MessageOptions = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<MessageOptions>, I>>(base?: I): MessageOptions {
+    return MessageOptions.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<MessageOptions>, I>>(object: I): MessageOptions {
     const message = createBaseMessageOptions();
     message.messageSetWireFormat = object.messageSetWireFormat ?? false;
@@ -2866,6 +2946,7 @@ function createBaseFieldOptions(): FieldOptions {
     packed: false,
     jstype: 0,
     lazy: false,
+    unverifiedLazy: false,
     deprecated: false,
     weak: false,
     uninterpretedOption: [],
@@ -2885,6 +2966,9 @@ export const FieldOptions = {
     }
     if (message.lazy === true) {
       writer.uint32(40).bool(message.lazy);
+    }
+    if (message.unverifiedLazy === true) {
+      writer.uint32(120).bool(message.unverifiedLazy);
     }
     if (message.deprecated === true) {
       writer.uint32(24).bool(message.deprecated);
@@ -2917,6 +3001,9 @@ export const FieldOptions = {
         case 5:
           message.lazy = reader.bool();
           break;
+        case 15:
+          message.unverifiedLazy = reader.bool();
+          break;
         case 3:
           message.deprecated = reader.bool();
           break;
@@ -2940,6 +3027,7 @@ export const FieldOptions = {
       packed: isSet(object.packed) ? Boolean(object.packed) : false,
       jstype: isSet(object.jstype) ? fieldOptions_JSTypeFromJSON(object.jstype) : 0,
       lazy: isSet(object.lazy) ? Boolean(object.lazy) : false,
+      unverifiedLazy: isSet(object.unverifiedLazy) ? Boolean(object.unverifiedLazy) : false,
       deprecated: isSet(object.deprecated) ? Boolean(object.deprecated) : false,
       weak: isSet(object.weak) ? Boolean(object.weak) : false,
       uninterpretedOption: Array.isArray(object?.uninterpretedOption)
@@ -2954,6 +3042,7 @@ export const FieldOptions = {
     message.packed !== undefined && (obj.packed = message.packed);
     message.jstype !== undefined && (obj.jstype = fieldOptions_JSTypeToJSON(message.jstype));
     message.lazy !== undefined && (obj.lazy = message.lazy);
+    message.unverifiedLazy !== undefined && (obj.unverifiedLazy = message.unverifiedLazy);
     message.deprecated !== undefined && (obj.deprecated = message.deprecated);
     message.weak !== undefined && (obj.weak = message.weak);
     if (message.uninterpretedOption) {
@@ -2966,12 +3055,17 @@ export const FieldOptions = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<FieldOptions>, I>>(base?: I): FieldOptions {
+    return FieldOptions.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<FieldOptions>, I>>(object: I): FieldOptions {
     const message = createBaseFieldOptions();
     message.ctype = object.ctype ?? 0;
     message.packed = object.packed ?? false;
     message.jstype = object.jstype ?? 0;
     message.lazy = object.lazy ?? false;
+    message.unverifiedLazy = object.unverifiedLazy ?? false;
     message.deprecated = object.deprecated ?? false;
     message.weak = object.weak ?? false;
     message.uninterpretedOption =
@@ -3028,6 +3122,10 @@ export const OneofOptions = {
       obj.uninterpretedOption = [];
     }
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<OneofOptions>, I>>(base?: I): OneofOptions {
+    return OneofOptions.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<OneofOptions>, I>>(object: I): OneofOptions {
@@ -3104,6 +3202,10 @@ export const EnumOptions = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<EnumOptions>, I>>(base?: I): EnumOptions {
+    return EnumOptions.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<EnumOptions>, I>>(object: I): EnumOptions {
     const message = createBaseEnumOptions();
     message.allowAlias = object.allowAlias ?? false;
@@ -3172,6 +3274,10 @@ export const EnumValueOptions = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<EnumValueOptions>, I>>(base?: I): EnumValueOptions {
+    return EnumValueOptions.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<EnumValueOptions>, I>>(object: I): EnumValueOptions {
     const message = createBaseEnumValueOptions();
     message.deprecated = object.deprecated ?? false;
@@ -3237,6 +3343,10 @@ export const ServiceOptions = {
       obj.uninterpretedOption = [];
     }
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ServiceOptions>, I>>(base?: I): ServiceOptions {
+    return ServiceOptions.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<ServiceOptions>, I>>(object: I): ServiceOptions {
@@ -3315,6 +3425,10 @@ export const MethodOptions = {
       obj.uninterpretedOption = [];
     }
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<MethodOptions>, I>>(base?: I): MethodOptions {
+    return MethodOptions.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<MethodOptions>, I>>(object: I): MethodOptions {
@@ -3438,6 +3552,10 @@ export const UninterpretedOption = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<UninterpretedOption>, I>>(base?: I): UninterpretedOption {
+    return UninterpretedOption.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<UninterpretedOption>, I>>(
     object: I,
   ): UninterpretedOption {
@@ -3506,6 +3624,12 @@ export const UninterpretedOption_NamePart = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<UninterpretedOption_NamePart>, I>>(
+    base?: I,
+  ): UninterpretedOption_NamePart {
+    return UninterpretedOption_NamePart.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<UninterpretedOption_NamePart>, I>>(
     object: I,
   ): UninterpretedOption_NamePart {
@@ -3562,6 +3686,10 @@ export const SourceCodeInfo = {
       obj.location = [];
     }
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SourceCodeInfo>, I>>(base?: I): SourceCodeInfo {
+    return SourceCodeInfo.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<SourceCodeInfo>, I>>(object: I): SourceCodeInfo {
@@ -3683,6 +3811,12 @@ export const SourceCodeInfo_Location = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<SourceCodeInfo_Location>, I>>(
+    base?: I,
+  ): SourceCodeInfo_Location {
+    return SourceCodeInfo_Location.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<SourceCodeInfo_Location>, I>>(
     object: I,
   ): SourceCodeInfo_Location {
@@ -3744,6 +3878,10 @@ export const GeneratedCodeInfo = {
       obj.annotation = [];
     }
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GeneratedCodeInfo>, I>>(base?: I): GeneratedCodeInfo {
+    return GeneratedCodeInfo.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<GeneratedCodeInfo>, I>>(object: I): GeneratedCodeInfo {
@@ -3836,6 +3974,12 @@ export const GeneratedCodeInfo_Annotation = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<GeneratedCodeInfo_Annotation>, I>>(
+    base?: I,
+  ): GeneratedCodeInfo_Annotation {
+    return GeneratedCodeInfo_Annotation.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<GeneratedCodeInfo_Annotation>, I>>(
     object: I,
   ): GeneratedCodeInfo_Annotation {
@@ -3851,33 +3995,45 @@ export const GeneratedCodeInfo_Annotation = {
 declare var self: any | undefined;
 declare var window: any | undefined;
 declare var global: any | undefined;
-var globalThis: any = (() => {
-  if (typeof globalThis !== "undefined") return globalThis;
-  if (typeof self !== "undefined") return self;
-  if (typeof window !== "undefined") return window;
-  if (typeof global !== "undefined") return global;
+var tsProtoGlobalThis: any = (() => {
+  if (typeof globalThis !== "undefined") {
+    return globalThis;
+  }
+  if (typeof self !== "undefined") {
+    return self;
+  }
+  if (typeof window !== "undefined") {
+    return window;
+  }
+  if (typeof global !== "undefined") {
+    return global;
+  }
   throw "Unable to locate global object";
 })();
 
-const atob: (b64: string) => string =
-  globalThis.atob || (b64 => globalThis.Buffer.from(b64, "base64").toString("binary"));
 function bytesFromBase64(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; ++i) {
-    arr[i] = bin.charCodeAt(i);
+  if (tsProtoGlobalThis.Buffer) {
+    return Uint8Array.from(tsProtoGlobalThis.Buffer.from(b64, "base64"));
+  } else {
+    const bin = tsProtoGlobalThis.atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; ++i) {
+      arr[i] = bin.charCodeAt(i);
+    }
+    return arr;
   }
-  return arr;
 }
 
-const btoa: (bin: string) => string =
-  globalThis.btoa || (bin => globalThis.Buffer.from(bin, "binary").toString("base64"));
 function base64FromBytes(arr: Uint8Array): string {
-  const bin: string[] = [];
-  for (const byte of arr) {
-    bin.push(String.fromCharCode(byte));
+  if (tsProtoGlobalThis.Buffer) {
+    return tsProtoGlobalThis.Buffer.from(arr).toString("base64");
+  } else {
+    const bin: string[] = [];
+    arr.forEach(byte => {
+      bin.push(String.fromCharCode(byte));
+    });
+    return tsProtoGlobalThis.btoa(bin.join(""));
   }
-  return btoa(bin.join(""));
 }
 
 type Builtin = Date | Function | Uint8Array | string | number | boolean | undefined;
@@ -3885,21 +4041,21 @@ type Builtin = Date | Function | Uint8Array | string | number | boolean | undefi
 export type DeepPartial<T> = T extends Builtin
   ? T
   : T extends Array<infer U>
-  ? Array<DeepPartial<U>>
-  : T extends ReadonlyArray<infer U>
-  ? ReadonlyArray<DeepPartial<U>>
-  : T extends {}
-  ? { [K in keyof T]?: DeepPartial<T[K]> }
-  : Partial<T>;
+    ? Array<DeepPartial<U>>
+    : T extends ReadonlyArray<infer U>
+      ? ReadonlyArray<DeepPartial<U>>
+      : T extends {}
+        ? { [K in keyof T]?: DeepPartial<T[K]> }
+        : Partial<T>;
 
 type KeysOfUnion<T> = T extends T ? keyof T : never;
 export type Exact<P, I extends P> = P extends Builtin
   ? P
-  : P & { [K in keyof P]: Exact<P[K], I[K]> } & Record<Exclude<keyof I, KeysOfUnion<P>>, never>;
+  : P & { [K in keyof P]: Exact<P[K], I[K]> } & { [K in Exclude<keyof I, KeysOfUnion<P>>]: never };
 
 function longToNumber(long: Long): number {
   if (long.gt(Number.MAX_SAFE_INTEGER)) {
-    throw new globalThis.Error("Value is larger than Number.MAX_SAFE_INTEGER");
+    throw new tsProtoGlobalThis.Error("Value is larger than Number.MAX_SAFE_INTEGER");
   }
   return long.toNumber();
 }

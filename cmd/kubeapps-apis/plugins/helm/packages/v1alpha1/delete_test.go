@@ -1,15 +1,5 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
@@ -17,20 +7,19 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kubeapps/kubeapps/cmd/apprepository-controller/pkg/apis/apprepository/v1alpha1"
-	corev1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/bufbuild/connect-go"
+	"github.com/vmware-tanzu/kubeapps/cmd/apprepository-controller/pkg/apis/apprepository/v1alpha1"
+	corev1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
 	"helm.sh/helm/v3/pkg/release"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestDeleteInstalledPackage(t *testing.T) {
 	testCases := []struct {
-		name               string
-		existingReleases   []releaseStub
-		request            *corev1.DeleteInstalledPackageRequest
-		expectedStatusCode codes.Code
+		name              string
+		existingReleases  []releaseStub
+		request           *corev1.DeleteInstalledPackageRequest
+		expectedErrorCode connect.Code
 	}{
 		{
 			name: "deletes the installed package",
@@ -53,7 +42,6 @@ func TestDeleteInstalledPackage(t *testing.T) {
 					Identifier: "my-apache",
 				},
 			},
-			expectedStatusCode: codes.OK,
 		},
 		{
 			name: "returns invalid if installed package doesn't exist",
@@ -65,7 +53,7 @@ func TestDeleteInstalledPackage(t *testing.T) {
 					Identifier: "not-a-valid-identifier",
 				},
 			},
-			expectedStatusCode: codes.NotFound,
+			expectedErrorCode: connect.CodeNotFound,
 		},
 	}
 
@@ -81,9 +69,12 @@ func TestDeleteInstalledPackage(t *testing.T) {
 			})
 			defer cleanup()
 
-			_, err := server.DeleteInstalledPackage(context.Background(), tc.request)
+			_, err := server.DeleteInstalledPackage(context.Background(), connect.NewRequest(tc.request))
 
-			if got, want := status.Code(err), tc.expectedStatusCode; got != want {
+			if err == nil && tc.expectedErrorCode == 0 {
+				return
+			}
+			if got, want := connect.CodeOf(err), tc.expectedErrorCode; err != nil && got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
 

@@ -1,60 +1,55 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"net/http"
 	"sync"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
+	"github.com/bufbuild/connect-go"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/pkg/clientgetter"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/pkg/connecterror"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/resources/v1alpha1/common"
+	"github.com/vmware-tanzu/kubeapps/pkg/kube"
+
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	log "k8s.io/klog/v2"
 
-	"github.com/kubeapps/kubeapps/cmd/apprepository-controller/pkg/client/clientset/versioned/scheme"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/core"
-	pkgsGRPCv1alpha1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/plugins/resources/v1alpha1"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/plugins/pkg/statuserror"
+	"github.com/vmware-tanzu/kubeapps/cmd/apprepository-controller/pkg/client/clientset/versioned/scheme"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/core"
+	pkgsGRPCv1alpha1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
+	pkgsConnectV1alpha1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1/v1alpha1connect"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/plugins/resources/v1alpha1"
 )
 
-type clientGetter func(context.Context, string) (kubernetes.Interface, dynamic.Interface, error)
-
-// Currently just a stub unimplemented server. More to come in following PRs.
 type Server struct {
 	v1alpha1.UnimplementedResourcesServiceServer
 	// clientGetter is a field so that it can be switched in tests for
 	// a fake client. NewServer() below sets this automatically with the
 	// non-test implementation.
-	clientGetter clientGetter
+	clientGetter clientgetter.ClientProviderInterface
+
+	// clusterServiceAccountClientGetter gets a client getter with service account for additional clusters
+	clusterServiceAccountClientGetter clientgetter.ClientProviderInterface
+
+	// for interactions with k8s API server in the context of
+	// kubeapps-internal-kubeappsapis service account
+	localServiceAccountClientGetter clientgetter.FixedClusterClientProviderInterface
 
 	// corePackagesClientGetter holds a function to obtain the core.packages.v1alpha1
 	// client. It is similarly initialised in NewServer() below.
-	corePackagesClientGetter func() (pkgsGRPCv1alpha1.PackagesServiceClient, error)
+	corePackagesClientGetter func() (pkgsConnectV1alpha1.PackagesServiceClient, error)
 
 	// We keep a restmapper to cache discovery of REST mappings from GVK->GVR.
 	restMapper meta.RESTMapper
@@ -64,12 +59,19 @@ type Server struct {
 	// stub version using the unsafe helpers while the real implementation
 	// queries the k8s API for a REST mapper.
 	kindToResource func(meta.RESTMapper, schema.GroupVersionKind) (schema.GroupVersionResource, meta.RESTScopeName, error)
+
+	// pluginConfig Resources plugin configuration values
+	pluginConfig *common.ResourcesPluginConfig
+
+	clientQPS float32
+
+	kubeappsCluster string
 }
 
 // createRESTMapper returns a rest mapper configured with the APIs of the
 // local k8s API server. This is used to convert between the GroupVersionKinds
 // of the resource references to the GroupVersionResource used by the API server.
-func createRESTMapper() (meta.RESTMapper, error) {
+func createRESTMapper(clientQPS float32, clientBurst int) (meta.RESTMapper, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, err
@@ -78,6 +80,14 @@ func createRESTMapper() (meta.RESTMapper, error) {
 	// See https://github.com/kubernetes/client-go/issues/657#issuecomment-842960258
 	config.GroupVersion = &schema.GroupVersion{Group: "", Version: "v1"}
 	config.NegotiatedSerializer = serializer.WithoutConversionCodecFactory{CodecFactory: scheme.Codecs}
+
+	// Avoid client-side throttling while the rest mapper discovers the
+	// available APIs on the K8s api server.  Note that this is only used for
+	// the discovery client below to return the rest mapper. The configured
+	// values for QPS and Burst are used for the client used for user requests.
+	config.QPS = clientQPS
+	config.Burst = clientBurst
+
 	client, err := rest.RESTClientFor(config)
 	if err != nil {
 		return nil, err
@@ -90,37 +100,46 @@ func createRESTMapper() (meta.RESTMapper, error) {
 	return restmapper.NewDiscoveryRESTMapper(groupResources), nil
 }
 
-func NewServer(configGetter core.KubernetesConfigGetter) (*Server, error) {
-	mapper, err := createRESTMapper()
+func NewServer(configGetter core.KubernetesConfigGetter, clientQPS float32, clientBurst int, pluginConfigPath string, clustersConfig kube.ClustersConfig, localPort int) (*Server, error) {
+	mapper, err := createRESTMapper(clientQPS, clientBurst)
 	if err != nil {
 		return nil, err
 	}
+
+	// If no config is provided, we default to the existing values for backwards compatibility.
+	pluginConfig := common.NewDefaultPluginConfig()
+	if pluginConfigPath != "" {
+		pluginConfig, err = common.ParsePluginConfig(pluginConfigPath)
+		if err != nil {
+			log.Fatalf("%s", err)
+		}
+		log.Infof("+resources using custom config: [%v]", *pluginConfig)
+	} else {
+		log.Info("+resources using default config since pluginConfigPath is empty")
+	}
+
+	clientGetter, err := newClientGetter(configGetter, false, clustersConfig)
+	if err != nil {
+		log.Fatalf("%s", err)
+	}
+
+	// TODO(absoludity): The use of this service account should be audited. Ideally it would
+	// not be possible to use this outside of the request for namespaces, but the code now
+	// allows this to be used in other contexts, which could lead to a privilege escalation.
+	clusterServiceAccountClientGetter, err := newClientGetter(configGetter, true, clustersConfig)
+	if err != nil {
+		log.Fatalf("%s", err)
+	}
+
 	return &Server{
-		clientGetter: func(ctx context.Context, cluster string) (kubernetes.Interface, dynamic.Interface, error) {
-			if configGetter == nil {
-				return nil, nil, status.Errorf(codes.Internal, "configGetter arg required")
-			}
-			config, err := configGetter(ctx, cluster)
-			if err != nil {
-				return nil, nil, status.Errorf(codes.FailedPrecondition, "unable to get config : %v", err.Error())
-			}
-			dynamicClient, err := dynamic.NewForConfig(config)
-			if err != nil {
-				return nil, nil, status.Errorf(codes.FailedPrecondition, "unable to get dynamic client : %s", err.Error())
-			}
-			typedClient, err := kubernetes.NewForConfig(config)
-			if err != nil {
-				return nil, nil, status.Errorf(codes.FailedPrecondition, "unable to get typed client: %s", err.Error())
-			}
-			return typedClient, dynamicClient, nil
-		},
-		corePackagesClientGetter: func() (pkgsGRPCv1alpha1.PackagesServiceClient, error) {
-			port := os.Getenv("PORT")
-			conn, err := grpc.Dial("localhost:"+port, grpc.WithInsecure())
-			if err != nil {
-				return nil, status.Errorf(codes.Internal, "unable to dial to localhost grpc service: %s", err.Error())
-			}
-			return pkgsGRPCv1alpha1.NewPackagesServiceClient(conn), nil
+		// Get the client getter with context auth
+		clientGetter: clientGetter,
+		// Get the additional cluster client getter with service account
+		clusterServiceAccountClientGetter: clusterServiceAccountClientGetter,
+		// Get the "in-cluster" client getter
+		localServiceAccountClientGetter: clientgetter.NewBackgroundClientProvider(clientgetter.Options{}, clientQPS, clientBurst),
+		corePackagesClientGetter: func() (pkgsConnectV1alpha1.PackagesServiceClient, error) {
+			return pkgsConnectV1alpha1.NewPackagesServiceClient(http.DefaultClient, fmt.Sprintf("http://localhost:%d/", localPort)), nil
 		},
 		restMapper: mapper,
 		kindToResource: func(mapper meta.RESTMapper, gvk schema.GroupVersionKind) (schema.GroupVersionResource, meta.RESTScopeName, error) {
@@ -130,58 +149,109 @@ func NewServer(configGetter core.KubernetesConfigGetter) (*Server, error) {
 			}
 			return mapping.Resource, mapping.Scope.Name(), nil
 		},
+		clientQPS:       clientQPS,
+		pluginConfig:    pluginConfig,
+		kubeappsCluster: clustersConfig.KubeappsClusterName,
 	}, nil
 }
 
-// GetResources returns the resources for an installed package.
-func (s *Server) GetResources(r *v1alpha1.GetResourcesRequest, stream v1alpha1.ResourcesService_GetResourcesServer) error {
-	namespace := r.GetInstalledPackageRef().GetContext().GetNamespace()
-	cluster := r.GetInstalledPackageRef().GetContext().GetCluster()
-	log.Infof("+resources GetResources (cluster: %q, namespace=%q)", cluster, namespace)
-
-	ctx, err := copyAuthorizationMetadataForOutgoing(stream.Context())
-	if err != nil {
-		return err
+func newClientGetter(configGetter core.KubernetesConfigGetter, useServiceAccount bool, clustersConfig kube.ClustersConfig) (clientgetter.ClientProviderInterface, error) {
+	customConfigGetter := func(headers http.Header, cluster string) (*rest.Config, error) {
+		if useServiceAccount {
+			// If a service account client getter has been requested, the service account
+			// to use depends on which cluster is targeted.
+			restConfig, err := rest.InClusterConfig()
+			if err != nil {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("Unable to get config : %w", err))
+			}
+			err = setupRestConfigForCluster(restConfig, cluster, clustersConfig)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("Unable to setup config for cluster : %w", err))
+			}
+			return restConfig, nil
+		}
+		restConfig, err := configGetter(headers, cluster)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("Unable to get config : %v", err))
+		}
+		return restConfig, nil
 	}
+
+	clientProvider, err := clientgetter.NewClientProvider(customConfigGetter, clientgetter.Options{})
+	if err != nil {
+		return nil, err
+	}
+	return clientProvider, nil
+}
+
+func setupRestConfigForCluster(restConfig *rest.Config, cluster string, clustersConfig kube.ClustersConfig) error {
+	// Override client config with the service token for additional cluster
+	// Added from #5034 after deprecation of "kubeops"
+	if cluster == clustersConfig.KubeappsClusterName {
+		log.Infof("Kubeapps cluster, should already have correct token for service acc: %q", restConfig.BearerTokenFile)
+	} else {
+		additionalCluster, ok := clustersConfig.Clusters[cluster]
+		if !ok {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("Cluster %q has no configuration", cluster))
+		}
+		// We *always* overwrite the token, even if it was configured empty.
+		restConfig.BearerToken = additionalCluster.ServiceToken
+		restConfig.BearerTokenFile = ""
+	}
+	return nil
+}
+
+// GetResources returns the resources for an installed package.
+func (s *Server) GetResources(ctx context.Context, r *connect.Request[v1alpha1.GetResourcesRequest], stream *connect.ServerStream[v1alpha1.GetResourcesResponse]) error {
+	namespace := r.Msg.GetInstalledPackageRef().GetContext().GetNamespace()
+	cluster := r.Msg.GetInstalledPackageRef().GetContext().GetCluster()
+	log.InfoS("+resources GetResources ", "cluster", cluster, "namespace", namespace)
 
 	// First we grab the resource references for the specified installed package.
 	coreClient, err := s.corePackagesClientGetter()
 	if err != nil {
+		log.Errorf("Unable to create core packages client: %+v", err)
 		return err
 	}
-	refsResponse, err := coreClient.GetInstalledPackageResourceRefs(ctx, &pkgsGRPCv1alpha1.GetInstalledPackageResourceRefsRequest{
-		InstalledPackageRef: r.InstalledPackageRef,
+
+	newRequest := connect.NewRequest(&pkgsGRPCv1alpha1.GetInstalledPackageResourceRefsRequest{
+		InstalledPackageRef: r.Msg.InstalledPackageRef,
 	})
+	newRequest.Header().Set("Authorization", r.Header().Get("Authorization"))
+
+	refsResponse, err := coreClient.GetInstalledPackageResourceRefs(ctx, newRequest)
+
 	if err != nil {
+		log.Errorf("Unable to query core packages client for installed package resource refs: %+v", err)
 		return err
 	}
 	var resourcesToReturn []*pkgsGRPCv1alpha1.ResourceRef
 	// If the request didn't specify a filter of resource refs,
 	// we return all those found for the installed package. Otherwise
 	// we only return the requested ones.
-	if len(r.GetResourceRefs()) == 0 {
-		if r.GetWatch() {
-			return status.Errorf(codes.InvalidArgument, "resource refs must be specified in request when watching resources")
+	if len(r.Msg.GetResourceRefs()) == 0 {
+		if r.Msg.GetWatch() {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("Resource refs must be specified in request when watching resources"))
 		}
-		resourcesToReturn = refsResponse.GetResourceRefs()
+		resourcesToReturn = refsResponse.Msg.GetResourceRefs()
 	} else {
-		for _, requestedRef := range r.GetResourceRefs() {
+		for _, requestedRef := range r.Msg.GetResourceRefs() {
 			found := false
-			for _, pkgRef := range refsResponse.GetResourceRefs() {
+			for _, pkgRef := range refsResponse.Msg.GetResourceRefs() {
 				if resourceRefsEqual(pkgRef, requestedRef) {
 					found = true
 					break
 				}
 			}
 			if !found {
-				return status.Errorf(codes.InvalidArgument, "requested resource %+v does not belong to installed package %+v", requestedRef, r.GetInstalledPackageRef())
+				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("Requested resource %+v does not belong to installed package %+v", requestedRef, r.Msg.GetInstalledPackageRef()))
 			}
 		}
-		resourcesToReturn = r.GetResourceRefs()
+		resourcesToReturn = r.Msg.GetResourceRefs()
 	}
 
 	// Then look up each referenced resource and send it down the stream.
-	_, dynamicClient, err := s.clientGetter(stream.Context(), cluster)
+	dynamicClient, err := s.clientGetter.Dynamic(r.Header(), cluster)
 	if err != nil {
 		return err
 	}
@@ -189,7 +259,7 @@ func (s *Server) GetResources(r *v1alpha1.GetResourcesRequest, stream v1alpha1.R
 	for _, ref := range resourcesToReturn {
 		groupVersion, err := schema.ParseGroupVersion(ref.ApiVersion)
 		if err != nil {
-			return status.Errorf(codes.Internal, "unable to parse group version from %q: %s", ref.ApiVersion, err.Error())
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("Unable to parse group version from %q: %w", ref.ApiVersion, err))
 		}
 		gvk := groupVersion.WithKind(ref.Kind)
 
@@ -197,18 +267,18 @@ func (s *Server) GetResources(r *v1alpha1.GetResourcesRequest, stream v1alpha1.R
 		// the scope of the resource (namespaced or not).
 		gvr, scopeName, err := s.kindToResource(s.restMapper, gvk)
 		if err != nil {
-			return status.Errorf(codes.Internal, "unable to map group-kind %v to resource: %s", gvk.GroupKind(), err.Error())
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("Unable to map group-kind %v to resource: %w", gvk.GroupKind(), err))
 		}
 
-		if !r.GetWatch() {
+		if !r.Msg.GetWatch() {
 			var resource interface{}
 			if scopeName == meta.RESTScopeNameNamespace {
-				resource, err = dynamicClient.Resource(gvr).Namespace(ref.Namespace).Get(stream.Context(), ref.GetName(), metav1.GetOptions{})
+				resource, err = dynamicClient.Resource(gvr).Namespace(ref.Namespace).Get(ctx, ref.GetName(), metav1.GetOptions{})
 			} else {
-				resource, err = dynamicClient.Resource(gvr).Get(stream.Context(), ref.GetName(), metav1.GetOptions{})
+				resource, err = dynamicClient.Resource(gvr).Get(ctx, ref.GetName(), metav1.GetOptions{})
 			}
 			if err != nil {
-				return status.Errorf(codes.Internal, "unable to get resource referenced by %+v: %s", ref, err.Error())
+				return connect.NewError(connect.CodeInternal, fmt.Errorf("Unable to get resource referenced by %+v: %w", ref, err))
 			}
 			err = sendResourceData(ref, resource, stream)
 			if err != nil {
@@ -223,13 +293,13 @@ func (s *Server) GetResources(r *v1alpha1.GetResourcesRequest, stream v1alpha1.R
 		}
 		var watcher watch.Interface
 		if scopeName == meta.RESTScopeNameNamespace {
-			watcher, err = dynamicClient.Resource(gvr).Namespace(ref.Namespace).Watch(stream.Context(), listOptions)
+			watcher, err = dynamicClient.Resource(gvr).Namespace(ref.Namespace).Watch(ctx, listOptions)
 		} else {
-			watcher, err = dynamicClient.Resource(gvr).Watch(stream.Context(), listOptions)
+			watcher, err = dynamicClient.Resource(gvr).Watch(ctx, listOptions)
 		}
 		if err != nil {
-			log.Errorf("unable to watch resource %v: %v", ref, err)
-			return status.Errorf(codes.Internal, "unable to watch resource %v", ref)
+			log.Errorf("Unable to watch resource %v: %v", ref, err)
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("Unable to watch resource %v", ref))
 		}
 		watchers = append(watchers, &ResourceWatcher{
 			ResourceRef: ref,
@@ -246,26 +316,29 @@ func (s *Server) GetResources(r *v1alpha1.GetResourcesRequest, stream v1alpha1.R
 	// data as it arrives.
 	resourceWatcher := mergeWatchers(watchers)
 	for e := range resourceWatcher.ResultChan() {
-		sendResourceData(e.ResourceRef, e.Object, stream)
+		err = sendResourceData(e.ResourceRef, e.Object, stream)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
 // GetServiceAccountNames returns the list of service account names in a given cluster and namespace.
-func (s *Server) GetServiceAccountNames(ctx context.Context, r *v1alpha1.GetServiceAccountNamesRequest) (*v1alpha1.GetServiceAccountNamesResponse, error) {
-	namespace := r.GetContext().GetNamespace()
-	cluster := r.GetContext().GetCluster()
-	log.Infof("+resources GetServiceAccountNames (cluster: %q, namespace=%q)", cluster, namespace)
+func (s *Server) GetServiceAccountNames(ctx context.Context, r *connect.Request[v1alpha1.GetServiceAccountNamesRequest]) (*connect.Response[v1alpha1.GetServiceAccountNamesResponse], error) {
+	namespace := r.Msg.GetContext().GetNamespace()
+	cluster := r.Msg.GetContext().GetCluster()
+	log.InfoS("+resources GetServiceAccountNames ", "cluster", cluster, "namespace", namespace)
 
-	typedClient, _, err := s.clientGetter(ctx, cluster)
+	typedClient, err := s.clientGetter.Typed(r.Header(), cluster)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to get the k8s client: '%v'", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("Unable to get the k8s client: '%w'", err))
 	}
 
 	saList, err := typedClient.CoreV1().ServiceAccounts(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, statuserror.FromK8sError("list", "ServiceAccounts", "", err)
+		return nil, connecterror.FromK8sError("list", "ServiceAccounts", "", err)
 	}
 
 	// We only need to send the list of SA names (ie, not sending secret names)
@@ -274,26 +347,29 @@ func (s *Server) GetServiceAccountNames(ctx context.Context, r *v1alpha1.GetServ
 		saStringList = append(saStringList, sa.Name)
 	}
 
-	return &v1alpha1.GetServiceAccountNamesResponse{
+	return connect.NewResponse(&v1alpha1.GetServiceAccountNamesResponse{
 		ServiceaccountNames: saStringList,
-	}, nil
+	}), nil
 
 }
 
 // sendResourceData just DRYs up this functionality shared between requests to
 // watch or get resources.
-func sendResourceData(ref *pkgsGRPCv1alpha1.ResourceRef, obj interface{}, s v1alpha1.ResourcesService_GetResourcesServer) error {
+func sendResourceData(ref *pkgsGRPCv1alpha1.ResourceRef, obj interface{}, s *connect.ServerStream[v1alpha1.GetResourcesResponse]) error {
 	resourceBytes, err := json.Marshal(obj)
 	if err != nil {
-		return status.Errorf(codes.Internal, "unable to marshal json for resource: %s", err.Error())
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("Unable to marshal json for resource: %w", err))
 	}
 
 	// Note, a string in Go is effectively a read-only slice of bytes.
 	// See https://stackoverflow.com/a/50880408 for interesting links.
-	s.Send(&v1alpha1.GetResourcesResponse{
+	err = s.Send(&v1alpha1.GetResourcesResponse{
 		ResourceRef: ref,
 		Manifest:    string(resourceBytes),
 	})
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("Unable send GetResourcesResponse: %w", err))
+	}
 
 	return nil
 }
@@ -386,23 +462,6 @@ func (rw *ResourceWatcher) ResultChan() <-chan ResourceEvent {
 	}()
 
 	return rw.resultChan
-}
-
-// copyAuthorizationMetadataForOutgoing explicitly copies the authz from the
-// incoming context to the outgoing context when making the outgoing call the
-// core packaging API.
-func copyAuthorizationMetadataForOutgoing(ctx context.Context) (context.Context, error) {
-	notAllowedErr := status.Errorf(codes.PermissionDenied, "unable to get authorization from request context")
-
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return nil, notAllowedErr
-	}
-	if len(md["authorization"]) == 0 {
-		return nil, notAllowedErr
-	}
-
-	return metadata.AppendToOutgoingContext(ctx, "authorization", md["authorization"][0]), nil
 }
 
 func resourceRefsEqual(r1, r2 *pkgsGRPCv1alpha1.ResourceRef) bool {

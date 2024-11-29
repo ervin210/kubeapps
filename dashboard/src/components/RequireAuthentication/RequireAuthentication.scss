@@ -1,0 +1,29 @@
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+.centered-modal {
+  position: absolute;
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid var(--cds-alias-object-border-color, #ccc);
+  border-radius: 4px;
+  margin-right: -50%;
+  background-color: var(--cds-alias-object-interaction-background), #fff;
+  inset: 50% auto auto 50%;
+  outline: none;
+  transform: translate(-50%, -50%);
+}
+
+.reload-modal {
+  span {
+    color: var(--cds-global-typography-color-400, #333);
+  }
+
+  &-buttons {
+    margin-top: 0.6rem;
+
+    cds-button {
+      margin: 0 0.6rem;
+    }
+  }
+}

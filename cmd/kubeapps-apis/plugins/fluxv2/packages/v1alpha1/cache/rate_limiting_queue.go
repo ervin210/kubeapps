@@ -1,24 +1,11 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+// Copyright 2021-2024 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
-Inspired by https://github.com/kubernetes/client-go/blob/master/util/workqueue/queue.go and
-         by https://github.com/kubernetes/client-go/blob/v0.22.4/util/workqueue/rate_limiting_queue.go
-	but adds a few funcs, like Name(), ExpectAdd(), WaitUntilForgotten() and Reset()
-*/
 package cache
 
 import (
+	"context"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -30,12 +17,17 @@ import (
 	log "k8s.io/klog/v2"
 )
 
+// Inspired by https://github.com/kubernetes/client-go/blob/master/util/workqueue/queue.go and
+//  by https://github.com/kubernetes/client-go/blob/master/util/workqueue/rate_limiting_queue.go
+//	but adds a few funcs, like Name(), ExpectAdd(), WaitUntilForgotten() and Reset()
+
 // RateLimitingInterface is an interface that rate limits items being added to the queue.
 type RateLimitingInterface interface {
 	workqueue.RateLimitingInterface
 	Name() string
 	ExpectAdd(item string)
 	IsProcessing(item string) bool
+	AddIfNotProcessing(item string)
 	WaitUntilForgotten(item string)
 	Reset()
 }
@@ -67,8 +59,7 @@ func (q *rateLimitingType) AddRateLimited(item interface{}) {
 	}
 	if itemstr, ok := item.(string); !ok {
 		// workqueue.Interface does not allow returning errors, so
-		runtime.HandleError(fmt.Errorf("invalid argument: expected string, found: [%s]",
-			reflect.TypeOf(item)))
+		runtime.HandleError(fmt.Errorf("invalid argument: expected string, found: [%T]", item))
 	} else {
 		q.DelayingInterface.AddAfter(itemstr, duration)
 	}
@@ -90,17 +81,19 @@ func (q *rateLimitingType) IsProcessing(item string) bool {
 	return q.queue.isProcessing(item)
 }
 
+func (q *rateLimitingType) AddIfNotProcessing(item string) {
+	q.queue.addIfNotProcessing(item)
+}
+
 func (q *rateLimitingType) Reset() {
 	log.Infof("+Reset(), [%s], delayingInterface queue size: [%d]",
 		q.Name(), q.DelayingInterface.Len())
 
 	q.queue.reset()
 
-	// this way we "forget" about ratelimit failures
+	// this way we "forget" about ratelimit failures, i.e. the items queued up
+	// via previous call(s) to .AddRateLimited() (i.e. via q.DelayingInterface.AddAfter)
 	q.rateLimiter = workqueue.DefaultControllerRateLimiter()
-
-	// TODO (gfichtenholt) Also need to "forget" the items queued up via previous call(s)
-	// to .AddRateLimited() (i.e. via q.DelayingInterface.AddAfter) ?
 }
 
 // only used in unit tests
@@ -108,7 +101,7 @@ func (q *rateLimitingType) ExpectAdd(item string) {
 	q.queue.expectAdd(item)
 }
 
-// used in unit test and production code, when a repo/chart needs to be loaded on demand
+// used in unit test AND production code, when a repo/chart needs to be loaded on demand
 func (q *rateLimitingType) WaitUntilForgotten(item string) {
 	q.queue.waitUntilDone(item)
 	// q.queue might be done with the item, but it may have been
@@ -117,18 +110,21 @@ func (q *rateLimitingType) WaitUntilForgotten(item string) {
 	// a call to .Forget(item).
 	// TODO: (gfichtenholt) don't do wait.PollInfinite() here, use some sensible
 	// timeout instead, and then this func will need to return an error
-	wait.PollInfinite(10*time.Millisecond, func() (bool, error) {
+	err := wait.PollUntilContextCancel(context.Background(), 10*time.Millisecond, true, func(ctx context.Context) (bool, error) {
 		return q.rateLimiter.NumRequeues(item) == 0, nil
 	})
+	if err != nil {
+		log.Errorf("Error when WaitUntilForgotten, error: %v", err)
+	}
 }
 
 func newQueue(name string, verbose bool) *Type {
 	return &Type{
 		name:       name,
 		verbose:    verbose,
-		expected:   sets.String{},
-		dirty:      sets.String{},
-		processing: sets.String{},
+		expected:   sets.Set[string]{},
+		dirty:      sets.Set[string]{},
+		processing: sets.Set[string]{},
 		cond:       sync.NewCond(&sync.Mutex{}),
 	}
 }
@@ -148,17 +144,20 @@ type Type struct {
 	queue []string
 
 	// expected defines all of the items that are expected to be processed.
+	// the whole reason behind having it in the queue is to avoid a race condition
+	// in unit tests, where an item is added to the queue and then the test code
+	// needs to wait until its been processed before taking further action
 	// Used in unit tests only
-	expected sets.String
+	expected sets.Set[string]
 
 	// dirty defines all of the items that need to be processed.
-	dirty sets.String
+	dirty sets.Set[string]
 
 	// Things that are currently being processed are in the processing set.
 	// These things may be simultaneously in the dirty set. When we finish
 	// processing something and remove it from this set, we'll check if
 	// it's in the dirty set, and if so, add it to the queue.
-	processing sets.String
+	processing sets.Set[string]
 
 	cond *sync.Cond
 
@@ -175,8 +174,7 @@ func (q *Type) Add(item interface{}) {
 	}
 	if itemstr, ok := item.(string); !ok {
 		// workqueue.Interface does not allow returning errors, so
-		runtime.HandleError(fmt.Errorf("invalid argument: expected string, found: [%s]",
-			reflect.TypeOf(item)))
+		runtime.HandleError(fmt.Errorf("invalid argument: expected string, found: [%T]", item))
 	} else {
 		q.expected.Delete(itemstr)
 		if q.dirty.Has(itemstr) {
@@ -245,8 +243,7 @@ func (q *Type) Done(item interface{}) {
 
 	if itemstr, ok := item.(string); !ok {
 		// workqueue.Interface does not allow returning errors, so
-		runtime.HandleError(fmt.Errorf("invalid argument: expected string, found: [%s]",
-			reflect.TypeOf(item)))
+		runtime.HandleError(fmt.Errorf("invalid argument: expected string, found: [%T]", item))
 	} else {
 		q.processing.Delete(itemstr)
 		if q.dirty.Has(itemstr) {
@@ -281,6 +278,26 @@ func (q *Type) ShuttingDown() bool {
 	return q.shuttingDown
 }
 
+// ShutDownWithDrain will cause q to ignore all new items added to it. As soon
+// as the worker goroutines have "drained", i.e: finished processing and called
+// Done on all existing items in the queue; they will be instructed to exit and
+// ShutDownWithDrain will return. Hence: a strict requirement for using this is;
+// your workers must ensure that Done is called on all items in the queue once
+// the shut down has been initiated, if that is not the case: this will block
+// indefinitely. It is, however, safe to call ShutDown after having called
+// ShutDownWithDrain, as to force the queue shut down to terminate immediately
+// without waiting for the drainage.
+//
+// TODO (gfichtenholt) put a stub in here just so kubeapps can upgrade to
+// k8s.io/client-go >= 0.23.X
+// ref https://github.com/vmware-tanzu/kubeapps/pull/5123#issuecomment-1194756900
+// I will implement once we upgrade k8s.io/client-go as stated and I can test the scenario
+func (q *Type) ShutDownWithDrain() {
+	// ref impl https://github.com/kubernetes/client-go/blob/b5c7588f8a17459d6f9c7a8dc24daecd2c35c98e/util/workqueue/queue.go#L211
+
+	log.Fatalf("The func ShutDownWithDrain(%s) has not been implemented yet", q.name)
+}
+
 // expectAdd marks item as expected to be processed in the near future
 // Used in unit tests only
 func (q *Type) expectAdd(item string) {
@@ -307,6 +324,30 @@ func (q *Type) isProcessing(item string) bool {
 	}
 
 	return q.processing.Has(item)
+}
+
+// Atomic check if not already processing then Add.
+func (q *Type) addIfNotProcessing(itemstr string) {
+	q.cond.L.Lock()
+	defer q.cond.L.Unlock()
+
+	if q.shuttingDown {
+		return
+	}
+
+	if !q.processing.Has(itemstr) {
+		q.expected.Delete(itemstr)
+		if q.dirty.Has(itemstr) {
+			return
+		}
+
+		q.dirty.Insert(itemstr)
+		q.queue = append(q.queue, itemstr)
+		if q.verbose {
+			log.Infof("[%s]: addIfNotProcessing(%s)%s", q.name, itemstr, q.prettyPrintAll())
+		}
+		q.cond.Broadcast()
+	}
 }
 
 // this func is the added feature that was missing in k8s workqueue
@@ -339,8 +380,8 @@ func (q *Type) reset() {
 	defer q.cond.L.Unlock()
 
 	q.queue = []string{}
-	q.dirty = sets.String{}
-	q.processing = sets.String{}
+	q.dirty = sets.Set[string]{}
+	q.processing = sets.Set[string]{}
 	// we are intentionally not resetting q.expected as we don't want to lose
 	// those across resync's
 }
@@ -348,9 +389,9 @@ func (q *Type) reset() {
 // for easier reading of debug output
 func (q *Type) prettyPrintAll() string {
 	return fmt.Sprintf("\n\texpected: %s\n\tdirty: %s\n\tprocessing: %s\n\tqueue: %s",
-		printOneItemPerLine(q.expected.List()),
-		printOneItemPerLine(q.dirty.List()),
-		printOneItemPerLine(q.processing.List()),
+		printOneItemPerLine(q.expected.UnsortedList()),
+		printOneItemPerLine(q.dirty.UnsortedList()),
+		printOneItemPerLine(q.processing.UnsortedList()),
 		printOneItemPerLine(q.queue))
 }
 
@@ -359,11 +400,11 @@ func printOneItemPerLine(strs []string) string {
 		return "[]"
 	} else {
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("[%d] [\n", len(strs)))
+		sb.WriteString(fmt.Sprintf("[%d] {\n", len(strs)))
 		for _, s := range strs {
 			sb.WriteString("\t\t" + s + "\n")
 		}
-		sb.WriteString("\t]")
+		sb.WriteString("\t}")
 		return sb.String()
 	}
 }

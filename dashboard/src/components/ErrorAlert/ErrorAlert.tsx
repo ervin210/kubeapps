@@ -1,11 +1,16 @@
-import Alert from "components/js/Alert";
+// Copyright 2022-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import AlertGroup from "components/AlertGroup";
 import RpcErrorMessage from "components/RpcErrorMessage";
+import { ReactNode } from "react";
 import { RpcError } from "shared/RpcError";
 import { CustomError } from "shared/types";
 import "./ErrorAlert.css";
 
 export interface IErrorAlert {
-  children: CustomError | Error | string;
+  error: CustomError | Error;
+  children?: React.ReactChildren | React.ReactNode | string;
 }
 
 function createWrap(message: any, index: number, indented: boolean): JSX.Element {
@@ -27,17 +32,22 @@ function buildMessages(errors: Error[]): JSX.Element[] {
 }
 
 // Extension of Alert component for showing more meaningful Errors
-export default function ErrorAlert({ children }: IErrorAlert) {
-  let messages: any[];
-  if (children instanceof CustomError) {
-    messages = [createWrap(children.message, 0, false)];
-    if (children.causes) {
-      messages.push(buildMessages(children.causes));
+export default function ErrorAlert({ error, children }: IErrorAlert) {
+  let messages: ReactNode[];
+  if (error instanceof CustomError) {
+    messages = [createWrap(error.message, 0, false)];
+    if (error.causes) {
+      messages.push(buildMessages(error.causes));
     }
-  } else if (children instanceof Error) {
-    messages = [createWrap(children.message, 0, false)];
+  } else if (error instanceof Error) {
+    messages = [createWrap(error.message, 0, false)];
   } else {
-    messages = [children];
+    messages = [error];
   }
-  return <Alert theme="danger">{messages}</Alert>;
+  return (
+    <AlertGroup status="danger">
+      {messages}
+      {children}
+    </AlertGroup>
+  );
 }

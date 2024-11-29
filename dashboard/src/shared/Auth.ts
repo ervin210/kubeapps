@@ -1,15 +1,23 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import { Code } from "@connectrpc/connect";
 import { AxiosResponse } from "axios";
-import * as jwt from "jsonwebtoken";
+import jwt from "jsonwebtoken";
 import { get } from "lodash";
 import { IConfig } from "./Config";
 import { KubeappsGrpcClient } from "./KubeappsGrpcClient";
-import { grpc } from "@improbable-eng/grpc-web";
+import {
+  InternalServerNetworkError,
+  NotFoundNetworkError,
+  UnauthorizedNetworkError,
+} from "./types";
 const AuthTokenKey = "kubeapps_auth_token";
 const AuthTokenOIDCKey = "kubeapps_auth_token_oidc";
 
 export class Auth {
-  public static resourcesClient = (token?: string) =>
-    new KubeappsGrpcClient().getResourcesServiceClientImpl(token);
+  public static resourcesServiceClient = (token?: string) =>
+    new KubeappsGrpcClient(token).getResourcesServiceClientImpl();
 
   public static getAuthToken() {
     return localStorage.getItem(AuthTokenKey);
@@ -48,7 +56,8 @@ export class Auth {
     return [
       // Trimming the b64 padding character ("=") as it is not accepted by k8s
       // https://github.com/kubernetes/apiserver/blob/release-1.22/pkg/authentication/request/websocket/protocol.go#L38
-      "base64url.bearer.authorization.k8s.io." + btoa(token).replaceAll("=", ""),
+      "base64url.bearer.authorization.k8s.io." +
+        Buffer.from(token).toString("base64").replaceAll("=", ""),
       "binary.k8s.io",
     ];
   }
@@ -64,12 +73,12 @@ export class Auth {
   // Throws an error if the token is invalid
   public static async validateToken(cluster: string, token: string) {
     try {
-      await this.resourcesClient(token).CheckNamespaceExists({
+      await this.resourcesServiceClient(token).checkNamespaceExists({
         context: { cluster, namespace: "default" },
       });
     } catch (e: any) {
-      if (e.code === grpc.Code.Unauthenticated) {
-        throw new Error("invalid token");
+      if (e.code === Code.Unauthenticated) {
+        throw new UnauthorizedNetworkError("invalid token");
       }
       // https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-requests
       // Since we are always passing a token here, A 403 authorization error
@@ -77,14 +86,14 @@ export class Auth {
       // don't make any assumptions over RBAC for the requested namespace or
       // other required authz permissions until operations on those resources
       // are attempted (though we may want to revisit this in the future).
-      if (e.code !== grpc.Code.PermissionDenied) {
-        if (e.code === grpc.Code.NotFound) {
-          throw new Error("not found");
+      if (e.code !== Code.PermissionDenied) {
+        if (e.code === Code.NotFound) {
+          throw new NotFoundNetworkError("not found");
         }
-        if (e.code === grpc.Code.Internal) {
-          throw new Error("internal error");
+        if (e.code === Code.Internal) {
+          throw new InternalServerNetworkError("internal error");
         }
-        throw new Error(`${e.code}: ${e.message}`);
+        throw new InternalServerNetworkError(`${e.code}: ${e.message}`);
       }
     }
   }
@@ -92,8 +101,8 @@ export class Auth {
   // isErrorFromAPIsServer returns true if the response is a 403 determined to have originated
   // from the grpc-web APIs server, rather than the auth proxy.
   public static isErrorFromAPIsServer(e: any): boolean {
-    const contentType = e.metadata?.headersMap["content-type"] as string[];
-    if (contentType.some(v => v.startsWith("application/grpc-web"))) {
+    const contentType = (e.metadata?.get("content-type") || "") as string;
+    if (contentType.startsWith("application/grpc-web")) {
       return true;
     }
     return false;
@@ -142,14 +151,14 @@ export class Auth {
   // it could potentially return a false positive.
   public static async isAuthenticatedWithCookie(cluster: string): Promise<boolean> {
     try {
-      await this.resourcesClient().CheckNamespaceExists({
+      await this.resourcesServiceClient().checkNamespaceExists({
         context: { cluster, namespace: "default" },
       });
     } catch (e: any) {
       // The only error response which can possibly mean we did authenticate is
       // a 403 from the k8s api server (ie. we got through to k8s api server
       // but RBAC doesn't authorize us).
-      if (e.code !== grpc.Code.PermissionDenied) {
+      if (e.code !== Code.PermissionDenied) {
         return false;
       }
 
@@ -170,7 +179,7 @@ export class Auth {
   // we use a default namespace for both invalid tokens and tokens without the expected
   // key.
   public static defaultNamespaceFromToken(token: string) {
-    const payload = jwt.decode(token);
+    const payload = jwt.decode(token) as { [index: string]: any };
     const namespaceKey = "kubernetes.io/serviceaccount/namespace";
     if (payload && payload[namespaceKey]) {
       return payload[namespaceKey];

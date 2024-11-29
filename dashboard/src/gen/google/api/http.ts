@@ -1,5 +1,4 @@
 /* eslint-disable */
-import Long from "long";
 import _m0 from "protobufjs/minimal";
 
 export const protobufPackage = "google.api";
@@ -151,7 +150,6 @@ export interface Http {
  *       string message_id = 1;
  *       string text = 2;
  *     }
- *
  *
  * The following HTTP JSON to RPC mapping is enabled:
  *
@@ -309,15 +307,15 @@ export interface HttpRule {
    * Maps to HTTP GET. Used for listing and getting information about
    * resources.
    */
-  get: string | undefined;
+  get?: string | undefined;
   /** Maps to HTTP PUT. Used for replacing a resource. */
-  put: string | undefined;
+  put?: string | undefined;
   /** Maps to HTTP POST. Used for creating a resource or performing an action. */
-  post: string | undefined;
+  post?: string | undefined;
   /** Maps to HTTP DELETE. Used for deleting a resource. */
-  delete: string | undefined;
+  delete?: string | undefined;
   /** Maps to HTTP PATCH. Used for updating a resource. */
-  patch: string | undefined;
+  patch?: string | undefined;
   /**
    * The custom pattern is used for specifying an HTTP method that is not
    * included in the `pattern` field, such as HEAD, or "*" to leave the
@@ -414,6 +412,10 @@ export const Http = {
     message.fullyDecodeReservedExpansion !== undefined &&
       (obj.fullyDecodeReservedExpansion = message.fullyDecodeReservedExpansion);
     return obj;
+  },
+
+  create<I extends Exact<DeepPartial<Http>, I>>(base?: I): Http {
+    return Http.fromPartial(base ?? {});
   },
 
   fromPartial<I extends Exact<DeepPartial<Http>, I>>(object: I): Http {
@@ -558,6 +560,10 @@ export const HttpRule = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<HttpRule>, I>>(base?: I): HttpRule {
+    return HttpRule.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<HttpRule>, I>>(object: I): HttpRule {
     const message = createBaseHttpRule();
     message.selector = object.selector ?? "";
@@ -627,6 +633,10 @@ export const CustomHttpPattern = {
     return obj;
   },
 
+  create<I extends Exact<DeepPartial<CustomHttpPattern>, I>>(base?: I): CustomHttpPattern {
+    return CustomHttpPattern.fromPartial(base ?? {});
+  },
+
   fromPartial<I extends Exact<DeepPartial<CustomHttpPattern>, I>>(object: I): CustomHttpPattern {
     const message = createBaseCustomHttpPattern();
     message.kind = object.kind ?? "";
@@ -640,22 +650,17 @@ type Builtin = Date | Function | Uint8Array | string | number | boolean | undefi
 export type DeepPartial<T> = T extends Builtin
   ? T
   : T extends Array<infer U>
-  ? Array<DeepPartial<U>>
-  : T extends ReadonlyArray<infer U>
-  ? ReadonlyArray<DeepPartial<U>>
-  : T extends {}
-  ? { [K in keyof T]?: DeepPartial<T[K]> }
-  : Partial<T>;
+    ? Array<DeepPartial<U>>
+    : T extends ReadonlyArray<infer U>
+      ? ReadonlyArray<DeepPartial<U>>
+      : T extends {}
+        ? { [K in keyof T]?: DeepPartial<T[K]> }
+        : Partial<T>;
 
 type KeysOfUnion<T> = T extends T ? keyof T : never;
 export type Exact<P, I extends P> = P extends Builtin
   ? P
-  : P & { [K in keyof P]: Exact<P[K], I[K]> } & Record<Exclude<keyof I, KeysOfUnion<P>>, never>;
-
-if (_m0.util.Long !== Long) {
-  _m0.util.Long = Long as any;
-  _m0.configure();
-}
+  : P & { [K in keyof P]: Exact<P[K], I[K]> } & { [K in Exclude<keyof I, KeysOfUnion<P>>]: never };
 
 function isSet(value: any): boolean {
   return value !== null && value !== undefined;

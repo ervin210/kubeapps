@@ -1,18 +1,5 @@
-/*
-Copyright (c) 2020 Bitnami
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2020-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 package pgtest
 
@@ -21,9 +8,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/kubeapps/kubeapps/pkg/chart/models"
-	"github.com/kubeapps/kubeapps/pkg/dbutils"
-	"github.com/kubeapps/kubeapps/pkg/dbutils/dbutilstest"
+	"github.com/vmware-tanzu/kubeapps/pkg/chart/models"
+	"github.com/vmware-tanzu/kubeapps/pkg/dbutils"
+	"github.com/vmware-tanzu/kubeapps/pkg/dbutils/dbutilstest"
 )
 
 const (
@@ -57,7 +44,12 @@ func openTestManager(t *testing.T) *dbutils.PostgresAssetManager {
 // GetInitializedPGManager returns an initialized postgres manager ready for testing.
 func GetInitializedManager(t *testing.T) (*dbutils.PostgresAssetManager, func()) {
 	pam := openTestManager(t)
-	cleanup := func() { pam.Close() }
+	cleanup := func() {
+		err := pam.Close()
+		if err != nil {
+			t.Fatalf("%+v", err)
+		}
+	}
 
 	err := pam.InvalidateCache()
 	if err != nil {
@@ -76,7 +68,7 @@ func CountRows(t *testing.T, db dbutils.PostgresDB, table string) int {
 	return count
 }
 
-func EnsureChartsExist(t *testing.T, pam dbutils.PostgresAssetManagerIface, charts []models.Chart, repo models.Repo) {
+func EnsureChartsExist(t *testing.T, pam dbutils.PostgresAssetManagerIface, charts []models.Chart, repo models.AppRepository) {
 	_, err := pam.EnsureRepoExists(repo.Namespace, repo.Name)
 	if err != nil {
 		t.Fatalf("%+v", err)

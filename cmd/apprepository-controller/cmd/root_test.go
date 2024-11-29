@@ -1,18 +1,5 @@
-/*
-Copyright 2021 VMware. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 package cmd
 
@@ -23,41 +10,49 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/kubeapps/kubeapps/cmd/apprepository-controller/server"
+	"github.com/vmware-tanzu/kubeapps/cmd/apprepository-controller/server"
 	v1 "k8s.io/api/core/v1"
 )
 
 func TestParseFlagsCorrect(t *testing.T) {
 	var tests = []struct {
-		name string
-		args []string
-		conf server.Config
+		name        string
+		args        []string
+		conf        server.Config
+		errExpected bool
 	}{
 		{
 			"no arguments returns default flag values",
 			[]string{},
 			server.Config{
-				Kubeconfig:               "",
-				MasterURL:                "",
-				RepoSyncImage:            "docker.io/kubeapps/asset-syncer:latest",
-				RepoSyncImagePullSecrets: nil,
-				RepoSyncCommand:          "/chart-repo",
-				KubeappsNamespace:        "kubeapps",
-				GlobalReposNamespace:     "kubeapps",
-				ReposPerNamespace:        true,
-				DBURL:                    "localhost",
-				DBUser:                   "root",
-				DBName:                   "charts",
-				DBSecretName:             "kubeapps-db",
-				DBSecretKey:              "postgresql-root-password",
-				UserAgentComment:         "",
-				Crontab:                  "*/10 * * * *",
-				TTLSecondsAfterFinished:  "3600",
-				CustomAnnotations:        []string{""},
-				CustomLabels:             []string{""},
-				ParsedCustomAnnotations:  map[string]string{},
-				ParsedCustomLabels:       map[string]string{},
+				Kubeconfig:                 "",
+				APIServerURL:               "",
+				RepoSyncImage:              "docker.io/kubeapps/asset-syncer:latest",
+				RepoSyncImagePullSecrets:   nil,
+				RepoSyncCommand:            "/chart-repo",
+				KubeappsNamespace:          "kubeapps",
+				GlobalPackagingNamespace:   "kubeapps",
+				ReposPerNamespace:          true,
+				DBURL:                      "localhost",
+				DBUser:                     "root",
+				DBName:                     "charts",
+				DBSecretName:               "kubeapps-db",
+				DBSecretKey:                "postgresql-root-password",
+				UserAgentComment:           "",
+				Crontab:                    "*/10 * * * *",
+				TTLSecondsAfterFinished:    "3600",
+				ActiveDeadlineSeconds:	    "",
+				CustomAnnotations:          []string{""},
+				CustomLabels:               []string{""},
+				ParsedCustomAnnotations:    map[string]string{},
+				ParsedCustomLabels:         map[string]string{},
+				ImagePullSecretsRefs:       nil,
+				V1Beta1CronJobs:            false,
+				SuccessfulJobsHistoryLimit: 3,
+				FailedJobsHistoryLimit:     1,
+				ConcurrencyPolicy:          "Replace",
 			},
+			true,
 		},
 		{
 			"pullSecrets with spaces",
@@ -66,34 +61,40 @@ func TestParseFlagsCorrect(t *testing.T) {
 				"--repo-sync-image-pullsecrets= s3",
 			},
 			server.Config{
-				Kubeconfig:               "",
-				MasterURL:                "",
-				RepoSyncImage:            "docker.io/kubeapps/asset-syncer:latest",
-				RepoSyncImagePullSecrets: []string{"s1", " s2", " s3"},
-				ImagePullSecretsRefs:     []v1.LocalObjectReference{{Name: "s1"}, {Name: " s2"}, {Name: " s3"}},
-				RepoSyncCommand:          "/chart-repo",
-				KubeappsNamespace:        "kubeapps",
-				GlobalReposNamespace:     "kubeapps",
-				ReposPerNamespace:        true,
-				DBURL:                    "localhost",
-				DBUser:                   "root",
-				DBName:                   "charts",
-				DBSecretName:             "kubeapps-db",
-				DBSecretKey:              "postgresql-root-password",
-				UserAgentComment:         "",
-				Crontab:                  "*/10 * * * *",
-				TTLSecondsAfterFinished:  "3600",
-				CustomAnnotations:        []string{""},
-				CustomLabels:             []string{""},
-				ParsedCustomAnnotations:  map[string]string{},
-				ParsedCustomLabels:       map[string]string{},
+				Kubeconfig:                 "",
+				APIServerURL:               "",
+				RepoSyncImage:              "docker.io/kubeapps/asset-syncer:latest",
+				RepoSyncImagePullSecrets:   []string{"s1", " s2", " s3"},
+				ImagePullSecretsRefs:       []v1.LocalObjectReference{{Name: "s1"}, {Name: " s2"}, {Name: " s3"}},
+				RepoSyncCommand:            "/chart-repo",
+				KubeappsNamespace:          "kubeapps",
+				GlobalPackagingNamespace:   "kubeapps",
+				ReposPerNamespace:          true,
+				DBURL:                      "localhost",
+				DBUser:                     "root",
+				DBName:                     "charts",
+				DBSecretName:               "kubeapps-db",
+				DBSecretKey:                "postgresql-root-password",
+				UserAgentComment:           "",
+				Crontab:                    "*/10 * * * *",
+				TTLSecondsAfterFinished:    "3600",
+				ActiveDeadlineSeconds:	    "",
+				CustomAnnotations:          []string{""},
+				CustomLabels:               []string{""},
+				ParsedCustomAnnotations:    map[string]string{},
+				ParsedCustomLabels:         map[string]string{},
+				V1Beta1CronJobs:            false,
+				SuccessfulJobsHistoryLimit: 3,
+				FailedJobsHistoryLimit:     1,
+				ConcurrencyPolicy:          "Replace",
 			},
+			true,
 		},
 		{
 			"all arguments are captured",
 			[]string{
 				"--kubeconfig", "foo01",
-				"--master", "foo02",
+				"--apiserver", "foo02",
 				"--repo-sync-image", "foo03",
 				"--repo-sync-image-pullsecrets", "s1,s2",
 				"--repo-sync-image-pullsecrets", "s3",
@@ -111,30 +112,42 @@ func TestParseFlagsCorrect(t *testing.T) {
 				"--custom-annotations", "foo13=bar13,foo13x=bar13x",
 				"--custom-annotations", "extra13=extra13",
 				"--custom-labels", "foo14=bar14,foo14x=bar14x",
+				"--ttl-lifetime-afterfinished-job", "1200",
+				"--active-deadline-seconds", "300",
+				"--v1-beta1-cron-jobs", "true",
+				"--successful-jobs-history-limit", "33",
+				"--failed-jobs-history-limit", "11",
+				"--concurrency-policy", "Allow",
 			},
 			server.Config{
-				Kubeconfig:               "foo01",
-				MasterURL:                "foo02",
-				RepoSyncImage:            "foo03",
-				RepoSyncImagePullSecrets: []string{"s1", "s2", "s3"},
-				ImagePullSecretsRefs:     []v1.LocalObjectReference{{Name: "s1"}, {Name: "s2"}, {Name: "s3"}},
-				RepoSyncCommand:          "foo04",
-				KubeappsNamespace:        "foo05",
-				GlobalReposNamespace:     "kubeapps-repos-global",
-				ReposPerNamespace:        false,
-				DBURL:                    "foo06",
-				DBUser:                   "foo07",
-				DBName:                   "foo08",
-				DBSecretName:             "foo09",
-				DBSecretKey:              "foo10",
-				UserAgentComment:         "foo11",
-				Crontab:                  "foo12",
-				TTLSecondsAfterFinished:  "3600",
-				CustomAnnotations:        []string{"foo13=bar13", "foo13x=bar13x", "extra13=extra13"},
-				CustomLabels:             []string{"foo14=bar14", "foo14x=bar14x"},
-				ParsedCustomAnnotations:  map[string]string{"foo13": "bar13", "foo13x": "bar13x", "extra13": "extra13"},
-				ParsedCustomLabels:       map[string]string{"foo14": "bar14", "foo14x": "bar14x"},
+				Kubeconfig:                 "foo01",
+				APIServerURL:               "foo02",
+				RepoSyncImage:              "foo03",
+				RepoSyncImagePullSecrets:   []string{"s1", "s2", "s3"},
+				ImagePullSecretsRefs:       []v1.LocalObjectReference{{Name: "s1"}, {Name: "s2"}, {Name: "s3"}},
+				RepoSyncCommand:            "foo04",
+				KubeappsNamespace:          "foo05",
+				GlobalPackagingNamespace:   "kubeapps-repos-global",
+				ReposPerNamespace:          false,
+				DBURL:                      "foo06",
+				DBUser:                     "foo07",
+				DBName:                     "foo08",
+				DBSecretName:               "foo09",
+				DBSecretKey:                "foo10",
+				UserAgentComment:           "foo11",
+				Crontab:                    "foo12",
+				TTLSecondsAfterFinished:    "1200",
+				ActiveDeadlineSeconds:	    "300",
+				CustomAnnotations:          []string{"foo13=bar13", "foo13x=bar13x", "extra13=extra13"},
+				CustomLabels:               []string{"foo14=bar14", "foo14x=bar14x"},
+				ParsedCustomAnnotations:    map[string]string{"foo13": "bar13", "foo13x": "bar13x", "extra13": "extra13"},
+				ParsedCustomLabels:         map[string]string{"foo14": "bar14", "foo14x": "bar14x"},
+				V1Beta1CronJobs:            true,
+				SuccessfulJobsHistoryLimit: 33,
+				FailedJobsHistoryLimit:     11,
+				ConcurrencyPolicy:          "Allow",
 			},
+			true,
 		},
 	}
 
@@ -146,10 +159,10 @@ func TestParseFlagsCorrect(t *testing.T) {
 			cmd.SetErr(b)
 			setFlags(cmd)
 			cmd.SetArgs(tt.args)
-			cmd.Execute()
-			serveOpts.ImagePullSecretsRefs = getImagePullSecretsRefs(serveOpts.RepoSyncImagePullSecrets)
-			serveOpts.ParsedCustomAnnotations = parseLabelsAnnotations(serveOpts.CustomAnnotations)
-			serveOpts.ParsedCustomLabels = parseLabelsAnnotations(serveOpts.CustomLabels)
+			err := cmd.Execute()
+			if !tt.errExpected && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
 			if got, want := serveOpts, tt.conf; !cmp.Equal(want, got) {
 				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got))
 			}

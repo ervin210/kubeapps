@@ -1,3 +1,6 @@
+// Copyright 2020-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { mount } from "enzyme";
 import OperatorHeader from "./OperatorHeader";
 
@@ -14,7 +17,7 @@ it("fallbacks to the default icon if not set", () => {
       .find("img")
       .filterWhere(i => i.prop("alt") === "icon")
       .prop("src"),
-  ).toBe("placeholder.png");
+  ).toBe("placeholder.svg");
 });
 
 it("includes the id, provider and version", () => {

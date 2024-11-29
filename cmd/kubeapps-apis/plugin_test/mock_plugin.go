@@ -1,39 +1,31 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package plugin_test
 
 import (
 	"context"
+	"fmt"
 
-	corev1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	packages "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	plugins "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/bufbuild/connect-go"
+	corev1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
+	plugins "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/pkg/paginate"
 )
 
 type TestPackagingPluginServer struct {
-	packages.UnimplementedPackagesServiceServer
+	corev1.UnimplementedPackagesServiceServer
 	Plugin                    *plugins.Plugin
 	AvailablePackageSummaries []*corev1.AvailablePackageSummary
 	AvailablePackageDetail    *corev1.AvailablePackageDetail
+	AvailablePackageMetadatas []*corev1.PackageMetadata
 	InstalledPackageSummaries []*corev1.InstalledPackageSummary
 	InstalledPackageDetail    *corev1.InstalledPackageDetail
 	PackageAppVersions        []*corev1.PackageAppVersion
 	ResourceRefs              []*corev1.ResourceRef
 	Categories                []string
 	NextPageToken             string
-	Status                    codes.Code
+	ErrorCode                 connect.Code
 }
 
 func NewTestPackagingPlugin(plugin *plugins.Plugin) *TestPackagingPluginServer {
@@ -43,98 +35,204 @@ func NewTestPackagingPlugin(plugin *plugins.Plugin) *TestPackagingPluginServer {
 }
 
 // GetAvailablePackages returns the packages based on the request.
-func (s TestPackagingPluginServer) GetAvailablePackageSummaries(ctx context.Context, request *packages.GetAvailablePackageSummariesRequest) (*packages.GetAvailablePackageSummariesResponse, error) {
-	if s.Status != codes.OK {
-		return nil, status.Errorf(s.Status, "Non-OK response")
+func (s TestPackagingPluginServer) GetAvailablePackageSummaries(ctx context.Context, request *connect.Request[corev1.GetAvailablePackageSummariesRequest]) (*connect.Response[corev1.GetAvailablePackageSummariesResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
 	}
-	return &packages.GetAvailablePackageSummariesResponse{
-		AvailablePackageSummaries: s.AvailablePackageSummaries,
+	itemOffset, err := paginate.ItemOffsetFromPageToken(request.Msg.PaginationOptions.GetPageToken())
+	if err != nil {
+		return nil, err
+	}
+	summaries := s.AvailablePackageSummaries[itemOffset:]
+	pageSize := int(request.Msg.PaginationOptions.GetPageSize())
+	nextPageToken := ""
+	if pageSize > 0 && pageSize < len(summaries) {
+		summaries = summaries[:pageSize]
+		nextPageToken = fmt.Sprintf("%d", itemOffset+pageSize)
+	}
+	return connect.NewResponse(&corev1.GetAvailablePackageSummariesResponse{
+		AvailablePackageSummaries: summaries,
 		Categories:                s.Categories,
-		NextPageToken:             s.NextPageToken,
-	}, nil
+		NextPageToken:             nextPageToken,
+	}), nil
 }
 
 // GetAvailablePackageDetail returns the package details based on the request.
-func (s TestPackagingPluginServer) GetAvailablePackageDetail(ctx context.Context, request *packages.GetAvailablePackageDetailRequest) (*packages.GetAvailablePackageDetailResponse, error) {
-	if s.Status != codes.OK {
-		return nil, status.Errorf(s.Status, "Non-OK response")
+func (s TestPackagingPluginServer) GetAvailablePackageDetail(ctx context.Context, request *connect.Request[corev1.GetAvailablePackageDetailRequest]) (*connect.Response[corev1.GetAvailablePackageDetailResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
 	}
-	return &packages.GetAvailablePackageDetailResponse{
+	return connect.NewResponse(&corev1.GetAvailablePackageDetailResponse{
 		AvailablePackageDetail: s.AvailablePackageDetail,
-	}, nil
+	}), nil
+}
+
+// GetAvailablePackageMetadatas returns the package metadatas based on the request.
+func (s TestPackagingPluginServer) GetAvailablePackageMetadatas(ctx context.Context, request *connect.Request[corev1.GetAvailablePackageMetadatasRequest]) (*connect.Response[corev1.GetAvailablePackageMetadatasResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
+	}
+	return connect.NewResponse(&corev1.GetAvailablePackageMetadatasResponse{
+		PackageMetadata: s.AvailablePackageMetadatas,
+	}), nil
 }
 
 // GetInstalledPackageSummaries returns the installed package summaries based on the request.
-func (s TestPackagingPluginServer) GetInstalledPackageSummaries(ctx context.Context, request *packages.GetInstalledPackageSummariesRequest) (*packages.GetInstalledPackageSummariesResponse, error) {
-	if s.Status != codes.OK {
-		return nil, status.Errorf(s.Status, "Non-OK response")
+func (s TestPackagingPluginServer) GetInstalledPackageSummaries(ctx context.Context, request *connect.Request[corev1.GetInstalledPackageSummariesRequest]) (*connect.Response[corev1.GetInstalledPackageSummariesResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
 	}
-	return &packages.GetInstalledPackageSummariesResponse{
+	return connect.NewResponse(&corev1.GetInstalledPackageSummariesResponse{
 		InstalledPackageSummaries: s.InstalledPackageSummaries,
 		NextPageToken:             s.NextPageToken,
-	}, nil
+	}), nil
 }
 
 // GetInstalledPackageDetail returns the package versions based on the request.
-func (s TestPackagingPluginServer) GetInstalledPackageDetail(ctx context.Context, request *packages.GetInstalledPackageDetailRequest) (*packages.GetInstalledPackageDetailResponse, error) {
-	if s.Status != codes.OK {
-		return nil, status.Errorf(s.Status, "Non-OK response")
+func (s TestPackagingPluginServer) GetInstalledPackageDetail(ctx context.Context, request *connect.Request[corev1.GetInstalledPackageDetailRequest]) (*connect.Response[corev1.GetInstalledPackageDetailResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
 	}
-	return &packages.GetInstalledPackageDetailResponse{
+	return connect.NewResponse(&corev1.GetInstalledPackageDetailResponse{
 		InstalledPackageDetail: s.InstalledPackageDetail,
-	}, nil
+	}), nil
 }
 
 // GetAvailablePackageVersions returns the package versions based on the request.
-func (s TestPackagingPluginServer) GetAvailablePackageVersions(ctx context.Context, request *packages.GetAvailablePackageVersionsRequest) (*packages.GetAvailablePackageVersionsResponse, error) {
-	if s.Status != codes.OK {
-		return nil, status.Errorf(s.Status, "Non-OK response")
+func (s TestPackagingPluginServer) GetAvailablePackageVersions(ctx context.Context, request *connect.Request[corev1.GetAvailablePackageVersionsRequest]) (*connect.Response[corev1.GetAvailablePackageVersionsResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
 	}
-	return &packages.GetAvailablePackageVersionsResponse{
+	return connect.NewResponse(&corev1.GetAvailablePackageVersionsResponse{
 		PackageAppVersions: s.PackageAppVersions,
-	}, nil
+	}), nil
 }
 
 // GetInstalledPackageResourceRefs returns the resource references based on the request.
-func (s TestPackagingPluginServer) GetInstalledPackageResourceRefs(ctx context.Context, request *packages.GetInstalledPackageResourceRefsRequest) (*packages.GetInstalledPackageResourceRefsResponse, error) {
-	if s.Status != codes.OK {
-		return nil, status.Errorf(s.Status, "Non-OK response")
+func (s TestPackagingPluginServer) GetInstalledPackageResourceRefs(ctx context.Context, request *connect.Request[corev1.GetInstalledPackageResourceRefsRequest]) (*connect.Response[corev1.GetInstalledPackageResourceRefsResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
 	}
-	return &packages.GetInstalledPackageResourceRefsResponse{
-		Context:      request.GetInstalledPackageRef().GetContext(),
+	return connect.NewResponse(&corev1.GetInstalledPackageResourceRefsResponse{
+		Context:      request.Msg.GetInstalledPackageRef().GetContext(),
 		ResourceRefs: s.ResourceRefs,
-	}, nil
+	}), nil
 }
 
-func (s TestPackagingPluginServer) CreateInstalledPackage(ctx context.Context, request *packages.CreateInstalledPackageRequest) (*packages.CreateInstalledPackageResponse, error) {
-	if s.Status != codes.OK {
-		return nil, status.Errorf(s.Status, "Non-OK response")
+func (s TestPackagingPluginServer) CreateInstalledPackage(ctx context.Context, request *connect.Request[corev1.CreateInstalledPackageRequest]) (*connect.Response[corev1.CreateInstalledPackageResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
 	}
-	return &packages.CreateInstalledPackageResponse{
-		InstalledPackageRef: &packages.InstalledPackageReference{
-			Context:    request.GetTargetContext(),
-			Identifier: request.GetName(),
+	return connect.NewResponse(&corev1.CreateInstalledPackageResponse{
+		InstalledPackageRef: &corev1.InstalledPackageReference{
+			Context:    request.Msg.GetTargetContext(),
+			Identifier: request.Msg.GetName(),
 			Plugin:     s.Plugin,
 		},
-	}, nil
+	}), nil
 }
 
-func (s TestPackagingPluginServer) UpdateInstalledPackage(ctx context.Context, request *packages.UpdateInstalledPackageRequest) (*packages.UpdateInstalledPackageResponse, error) {
-	if s.Status != codes.OK {
-		return nil, status.Errorf(s.Status, "Non-OK response")
+func (s TestPackagingPluginServer) UpdateInstalledPackage(ctx context.Context, request *connect.Request[corev1.UpdateInstalledPackageRequest]) (*connect.Response[corev1.UpdateInstalledPackageResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
 	}
-	return &packages.UpdateInstalledPackageResponse{
-		InstalledPackageRef: &packages.InstalledPackageReference{
-			Context:    request.GetInstalledPackageRef().GetContext(),
-			Identifier: request.GetInstalledPackageRef().GetIdentifier(),
+	return connect.NewResponse(&corev1.UpdateInstalledPackageResponse{
+		InstalledPackageRef: &corev1.InstalledPackageReference{
+			Context:    request.Msg.GetInstalledPackageRef().GetContext(),
+			Identifier: request.Msg.GetInstalledPackageRef().GetIdentifier(),
 			Plugin:     s.Plugin,
 		},
-	}, nil
+	}), nil
 }
 
-func (s TestPackagingPluginServer) DeleteInstalledPackage(ctx context.Context, request *packages.DeleteInstalledPackageRequest) (*packages.DeleteInstalledPackageResponse, error) {
-	if s.Status != codes.OK {
-		return nil, status.Errorf(s.Status, "Non-OK response")
+func (s TestPackagingPluginServer) DeleteInstalledPackage(ctx context.Context, request *connect.Request[corev1.DeleteInstalledPackageRequest]) (*connect.Response[corev1.DeleteInstalledPackageResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
 	}
-	return &packages.DeleteInstalledPackageResponse{}, nil
+	return connect.NewResponse(&corev1.DeleteInstalledPackageResponse{}), nil
+}
+
+type TestRepositoriesPluginServer struct {
+	corev1.UnimplementedRepositoriesServiceServer
+	Plugin                     *plugins.Plugin
+	PackageRepositoryDetail    *corev1.PackageRepositoryDetail
+	PackageRepositorySummaries []*corev1.PackageRepositorySummary
+	ErrorCode                  connect.Code
+}
+
+func NewTestRepositoriesPlugin(plugin *plugins.Plugin) *TestRepositoriesPluginServer {
+	return &TestRepositoriesPluginServer{
+		Plugin: plugin,
+	}
+}
+
+func (s TestRepositoriesPluginServer) AddPackageRepository(ctx context.Context, request *connect.Request[corev1.AddPackageRepositoryRequest]) (*connect.Response[corev1.AddPackageRepositoryResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
+	}
+	return connect.NewResponse(&corev1.AddPackageRepositoryResponse{
+		PackageRepoRef: &corev1.PackageRepositoryReference{
+			Context:    request.Msg.GetContext(),
+			Identifier: request.Msg.GetName(),
+			Plugin:     s.Plugin,
+		},
+	}), nil
+}
+
+func (s TestRepositoriesPluginServer) GetPackageRepositoryDetail(ctx context.Context, request *connect.Request[corev1.GetPackageRepositoryDetailRequest]) (*connect.Response[corev1.GetPackageRepositoryDetailResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
+	}
+	return connect.NewResponse(&corev1.GetPackageRepositoryDetailResponse{
+		Detail: s.PackageRepositoryDetail,
+	}), nil
+}
+
+// GetPackageRepositorySummaries returns the package repository summaries based on the request.
+func (s TestRepositoriesPluginServer) GetPackageRepositorySummaries(ctx context.Context, request *connect.Request[corev1.GetPackageRepositorySummariesRequest]) (*connect.Response[corev1.GetPackageRepositorySummariesResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
+	}
+	return connect.NewResponse(&corev1.GetPackageRepositorySummariesResponse{
+		PackageRepositorySummaries: s.PackageRepositorySummaries,
+	}), nil
+}
+
+func (s TestRepositoriesPluginServer) UpdatePackageRepository(ctx context.Context, request *connect.Request[corev1.UpdatePackageRepositoryRequest]) (*connect.Response[corev1.UpdatePackageRepositoryResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
+	}
+	return connect.NewResponse(&corev1.UpdatePackageRepositoryResponse{
+		PackageRepoRef: &corev1.PackageRepositoryReference{
+			Context:    request.Msg.GetPackageRepoRef().GetContext(),
+			Identifier: request.Msg.GetPackageRepoRef().GetIdentifier(),
+			Plugin:     s.Plugin,
+		},
+	}), nil
+}
+
+func (s TestRepositoriesPluginServer) DeletePackageRepository(ctx context.Context, request *connect.Request[corev1.DeletePackageRepositoryRequest]) (*connect.Response[corev1.DeletePackageRepositoryResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
+	}
+	return connect.NewResponse(&corev1.DeletePackageRepositoryResponse{}), nil
+}
+
+func (s TestRepositoriesPluginServer) GetPackageRepositoryPermissions(ctx context.Context, request *connect.Request[corev1.GetPackageRepositoryPermissionsRequest]) (*connect.Response[corev1.GetPackageRepositoryPermissionsResponse], error) {
+	if s.ErrorCode != 0 {
+		return nil, connect.NewError(s.ErrorCode, fmt.Errorf("Non-OK response"))
+	}
+	return connect.NewResponse(&corev1.GetPackageRepositoryPermissionsResponse{
+		Permissions: []*corev1.PackageRepositoriesPermissions{
+			{
+				Plugin: s.Plugin,
+				Namespace: map[string]bool{
+					"ns-verb": true,
+				},
+				Global: map[string]bool{
+					"global-verb": true,
+				},
+			},
+		},
+	}), nil
 }

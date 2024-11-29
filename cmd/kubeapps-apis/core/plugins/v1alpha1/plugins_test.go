@@ -1,33 +1,24 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1alpha1
 
 import (
 	"context"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"testing/fstest"
 
+	"github.com/bufbuild/connect-go"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/core"
-	plugins "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
-	"github.com/kubeapps/kubeapps/pkg/kube"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/core"
+	plugins "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
+	"github.com/vmware-tanzu/kubeapps/pkg/kube"
 	"k8s.io/client-go/rest"
 )
 
@@ -74,16 +65,16 @@ func TestPluginsAvailable(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ps := pluginsServer{
+			ps := PluginsServer{
 				pluginsWithServers: tc.configuredPlugins,
 			}
 
-			resp, err := ps.GetConfiguredPlugins(context.TODO(), &plugins.GetConfiguredPluginsRequest{})
+			resp, err := ps.GetConfiguredPlugins(context.TODO(), connect.NewRequest(&plugins.GetConfiguredPluginsRequest{}))
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
 
-			if got, want := resp.Plugins, tc.expectedPlugins; !cmp.Equal(want, got, ignoreUnexported) {
+			if got, want := resp.Msg.Plugins, tc.expectedPlugins; !cmp.Equal(want, got, ignoreUnexported) {
 				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, ignoreUnexported))
 			}
 		})
@@ -251,6 +242,10 @@ func TestListOSFiles(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// TODO(agamez): env vars and file paths should be handled properly for Windows operating system
+			if runtime.GOOS == "windows" {
+				t.Skip("Skipping in a Windows OS")
+			}
 			fs := createTestFS(t, tc.filenames)
 
 			got, err := listSOFiles(fs, tc.pluginsDirs)
@@ -289,29 +284,18 @@ func createTestFS(t *testing.T, filenames []string) fstest.MapFS {
 func TestExtractToken(t *testing.T) {
 	testCases := []struct {
 		name          string
-		contextKey    string
-		contextValue  string
+		headers       http.Header
 		expectedToken string
 		expectedErr   error
 	}{
 		{
-			name:          "it returns the expected token without error for a valid 'authorization' metadata value",
-			contextKey:    "authorization",
-			contextValue:  "Bearer abc",
+			name:          "it returns the expected token without error for a valid 'Authorization' header",
+			headers:       http.Header{"Authorization": []string{"Bearer abc"}},
 			expectedToken: "abc",
 			expectedErr:   nil,
 		},
 		{
-			name:          "it returns no token with an error if the 'authorization' metadata value is invalid",
-			contextKey:    "authorization",
-			contextValue:  "Bla",
-			expectedToken: "",
-			expectedErr:   fmt.Errorf("malformed authorization metadata"),
-		},
-		{
 			name:          "it returns no token and expected error if the 'authorization' is empty",
-			contextKey:    "",
-			contextValue:  "",
 			expectedToken: "",
 			expectedErr:   fmt.Errorf("missing authorization metadata"),
 		},
@@ -319,12 +303,8 @@ func TestExtractToken(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			context := context.Background()
-			context = metadata.NewIncomingContext(context, metadata.New(map[string]string{
-				tc.contextKey: tc.contextValue,
-			}))
 
-			token, err := extractToken(context)
+			token, err := extractToken(tc.headers)
 
 			if tc.expectedErr != nil && err != nil {
 				if got, want := err.Error(), tc.expectedErr.Error(); !cmp.Equal(want, got) {
@@ -367,47 +347,36 @@ func TestCreateConfigGetterWithParams(t *testing.T) {
 	testCases := []struct {
 		name            string
 		cluster         string
-		contextKey      string
-		contextValue    string
+		headers         http.Header
 		expectedAPIHost string
 		expectedErrMsg  error
 	}{
 		{
 			name:            "it creates the config for the default cluster when passing a valid value for the authorization metadata",
-			contextKey:      "authorization",
-			contextValue:    "Bearer abc",
+			headers:         http.Header{"Authorization": []string{"Bearer abc"}},
 			expectedAPIHost: DefaultK8sAPI,
 			expectedErrMsg:  nil,
 		},
 		{
 			name:           "it doesn't create the config and throws a grpc error when passing an invalid authorization metadata",
-			contextKey:     "authorization",
-			contextValue:   "Bla",
-			expectedErrMsg: status.Errorf(codes.Unauthenticated, "invalid authorization metadata: malformed authorization metadata"),
+			headers:        http.Header{"Authorization": []string{"Bla"}},
+			expectedErrMsg: connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("Invalid authorization metadata: malformed authorization metadata")),
 		},
 		{
 			name:            "it doesn't create the config and throws a grpc error for the default cluster when no authorization metadata is passed",
-			contextKey:      "",
-			contextValue:    "",
 			expectedAPIHost: DefaultK8sAPI,
-			expectedErrMsg:  status.Errorf(codes.Unauthenticated, "invalid authorization metadata: missing authorization metadata"),
+			expectedErrMsg:  connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("Invalid authorization metadata: missing authorization metadata")),
 		},
 		{
 			name:            "it doesn't create the config and throws a grpc error for the other cluster",
-			contextKey:      "",
-			contextValue:    "",
 			cluster:         OtherClusterName,
 			expectedAPIHost: OtherK8sAPI,
-			expectedErrMsg:  status.Errorf(codes.Unauthenticated, "invalid authorization metadata: missing authorization metadata"),
+			expectedErrMsg:  connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("Invalid authorization metadata: missing authorization metadata")),
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := metadata.NewIncomingContext(context.Background(), metadata.New(map[string]string{
-				tc.contextKey: tc.contextValue,
-			}))
-
 			serveOpts := core.ServeOptions{
 				ClustersConfigPath: "/config.yaml",
 				PinnipedProxyURL:   "http://example.com",
@@ -417,7 +386,7 @@ func TestCreateConfigGetterWithParams(t *testing.T) {
 				t.Fatalf("in %s: fail creating the configGetter:  %+v", tc.name, err)
 			}
 
-			restConfig, err := configGetter(ctx, tc.cluster)
+			restConfig, err := configGetter(tc.headers, tc.cluster)
 			if tc.expectedErrMsg != nil && err != nil {
 				if got, want := err.Error(), tc.expectedErrMsg.Error(); !cmp.Equal(want, got) {
 					t.Errorf("in %s: mismatch (-want +got):\n%s", tc.name, cmp.Diff(want, got))
@@ -429,8 +398,7 @@ func TestCreateConfigGetterWithParams(t *testing.T) {
 			if tc.expectedErrMsg == nil {
 				if restConfig == nil {
 					t.Errorf("got: nil, want: rest.Config")
-				}
-				if got, want := restConfig.Host, tc.expectedAPIHost; got != want {
+				} else if got, want := restConfig.Host, tc.expectedAPIHost; got != want {
 					t.Errorf("got: %q, want: %q", got, want)
 				}
 			}

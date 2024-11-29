@@ -1,3 +1,6 @@
+// Copyright 2018-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 .color-icon-info {
   cds-icon {
     --color: var(--cds-alias-status-info, #0072a3);
@@ -30,6 +33,18 @@
   justify-content: center;
 }
 
+.self-center {
+  align-self: center;
+}
+
+.bolder {
+  font-weight: bolder;
+}
+
+.left-align {
+  text-align: left;
+}
+
 .flex-h-center {
   display: flex;
   width: 100%;
@@ -39,6 +54,14 @@
 .flex-v-center {
   display: flex;
   align-items: center;
+}
+
+.italics {
+  font-style: italic;
+}
+
+.hidden {
+  visibility: hidden;
 }
 
 .notification-icon {
@@ -65,11 +88,10 @@
   flex: 1 1 auto;
 
   .content-area {
+    overflow: hidden auto;
     flex: 1 1 auto;
     padding: 0 0.6rem;
     -webkit-overflow-scrolling: touch;
-    overflow-x: hidden;
-    overflow-y: auto;
   }
 }
 
@@ -79,11 +101,15 @@
 
 .deployment-form {
   &-tabs {
-    margin-bottom: 0.6rem;
+    margin-bottom: 1rem;
 
     &-data {
       margin-top: 0.6rem;
       overflow-x: hidden;
+
+      &-buttons {
+        margin-top: 0.1rem;
+      }
     }
   }
 
@@ -145,13 +171,13 @@
   }
 }
 
-.application-readme {
+@mixin default-markdown-style {
   pre {
     overflow: auto;
     padding: 0.6rem;
+    border-radius: 5px;
     margin: 0.625em 0;
     background-color: var(--cds-global-typography-color-400, #333);
-    border-radius: 5px;
     color: var(--cds-global-typography-color-100, #fff);
   }
 
@@ -169,9 +195,9 @@
     max-width: 100%;
     padding: 0.1em 1em;
     border: 1px solid var(--cds-global-typography-color-200, #e8e8e8);
+    border-radius: 5px;
     margin: 1em 0;
     background-color: var(--cds-global-typography-color-100, #fff);
-    border-radius: 5px;
 
     p:first-child {
       margin-top: 0.6rem;
@@ -189,6 +215,24 @@
 
   img {
     max-width: 100%;
+  }
+}
+
+.application-readme {
+  @include default-markdown-style;
+}
+
+.application-notes {
+  @include default-markdown-style;
+
+  display: grid;
+  padding: 0.6rem;
+  border: 2px solid var(--cds-alias-object-border-color, #f1f1f1);
+  margin: 0.625em 0;
+  font-family: monospace;
+
+  p:first-child {
+    margin-top: 0;
   }
 }
 

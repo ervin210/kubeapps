@@ -1,3 +1,6 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { get } from "lodash";
 import { ThunkAction } from "redux-thunk";
 import { Operators } from "shared/Operators";
@@ -137,7 +140,7 @@ const actions = [
   errorSubscriptionList,
 ];
 
-export type OperatorAction = ActionType<typeof actions[number]>;
+export type OperatorAction = ActionType<(typeof actions)[number]>;
 
 export function checkOLMInstalled(
   cluster: string,

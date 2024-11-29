@@ -2,11 +2,11 @@ Signed-off-by: <USER> <EMAIL>
 
 **Description of the change**
 
-This is an automatic PR for synchronizing the changes performed externally at the [kubeapps development chart](https://github.com/kubeapps/kubeapps/tree/main/chart/kubeapps) to the official Bitnami chart.
+This is an automatic PR for synchronizing the changes performed externally at the [kubeapps development chart](https://github.com/vmware-tanzu/kubeapps/tree/main/chart/kubeapps) to the official Bitnami chart.
 
 **Benefits**
 
-The Kubeapps [bitnami/kubeapps chart](https://github.com/bitnami/charts/tree/master/bitnami/kubeapps) will get the newest changes, including image version updates and other updates.
+The Kubeapps [bitnami/kubeapps chart](https://github.com/bitnami/charts/tree/main/bitnami/kubeapps) will get the newest changes, including image version updates and other updates.
 
 **Possible drawbacks**
 

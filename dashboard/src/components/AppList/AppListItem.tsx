@@ -1,9 +1,13 @@
-import Tooltip from "components/js/Tooltip";
-import { InstalledPackageSummary } from "gen/kubeappsapis/core/packages/v1alpha1/packages";
-import { getPluginIcon } from "shared/utils";
-import placeholder from "../../placeholder.png";
-import * as url from "../../shared/url";
-import InfoCard from "../InfoCard/InfoCard";
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import { CdsIcon } from "@cds/react/icon";
+import InfoCard from "components/InfoCard";
+import { InstalledPackageSummary } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
+import placeholder from "icons/placeholder.svg";
+import { Tooltip } from "react-tooltip";
+import * as url from "shared/url";
+import { getAppStatusLabel, getPluginIcon, getPluginName } from "shared/utils";
 import "./AppListItem.css";
 
 export interface IAppListItemProps {
@@ -14,7 +18,7 @@ export interface IAppListItemProps {
 function AppListItem(props: IAppListItemProps) {
   const { app } = props;
   const icon = app.iconUrl ?? placeholder;
-  const appStatus = app.status?.userReason?.toLocaleLowerCase();
+  const appStatus = getAppStatusLabel(app.status?.reason);
   const appReady = app.status?.ready ?? false;
   let tooltipContent;
 
@@ -42,19 +46,18 @@ function AppListItem(props: IAppListItemProps) {
 
   const tooltip = tooltipContent ? (
     <div className="color-icon-info">
-      <Tooltip
-        label="update-tooltip"
-        id={`${app.name}-update-tooltip`}
-        icon="circle-arrow"
-        position="top-left"
-        iconProps={{ solid: true, size: "md" }}
-      >
+      <span data-tooltip-id={`${app.name}-update-tooltip`}>
+        <CdsIcon shape="circle-arrow" size="md" solid={true} />
+      </span>
+      <Tooltip id={`${app.name}-update-tooltip`} place="top-end" className="small-tooltip">
         {tooltipContent}
       </Tooltip>
     </div>
   ) : (
     <></>
   );
+
+  const pkgPluginName = getPluginName(app.installedPackageRef?.plugin);
 
   return app?.installedPackageRef ? (
     <InfoCard
@@ -64,6 +67,8 @@ function AppListItem(props: IAppListItemProps) {
       icon={icon}
       info={
         <div>
+          <span>Namespace: {app.installedPackageRef.context?.namespace}</span>
+          <br />
           <span>
             App: {app.pkgDisplayName}{" "}
             {app.currentVersion?.appVersion
@@ -77,6 +82,8 @@ function AppListItem(props: IAppListItemProps) {
       description={app.shortDescription}
       tag1Content={appStatus}
       tag1Class={appReady ? "label-success" : "label-warning"}
+      tag2Content={pkgPluginName}
+      tag2Class={"label-info-secondary"}
       tooltip={tooltip}
       bgIcon={getPluginIcon(app.installedPackageRef?.plugin)}
     />

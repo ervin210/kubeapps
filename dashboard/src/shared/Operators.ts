@@ -1,5 +1,8 @@
+// Copyright 2020-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import * as url from "shared/url";
-import placeholder from "../placeholder.png";
+import placeholder from "icons/placeholder.svg";
 import { axiosWithAuth } from "./AxiosInstance";
 import {
   IClusterServiceVersion,

@@ -1,18 +1,5 @@
-/*
-Copyright 2017 Bitnami.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2017-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1
 
@@ -39,7 +26,7 @@ type AppRepositorySpec struct {
 	Type               string                 `json:"type"`
 	URL                string                 `json:"url"`
 	Auth               AppRepositoryAuth      `json:"auth,omitempty"`
-	ResyncRequests     uint                   `json:"resyncRequests"`
+	ResyncRequests     int                    `json:"resyncRequests"`
 	SyncJobPodTemplate corev1.PodTemplateSpec `json:"syncJobPodTemplate"`
 	// DockerRegistrySecrets is a list of dockerconfigjson secrets which exist
 	// in the same namespace as the AppRepository and should be included
@@ -56,6 +43,8 @@ type AppRepositorySpec struct {
 	Description string `json:"description,omitempty"`
 	// PassCredentials allows passing credentials with requests to other domains linked from the repository
 	PassCredentials bool `json:"passCredentials,omitempty"`
+	// Interval is the time between resyncs of the repository
+	Interval string `json:"interval,omitempty"`
 }
 
 // AppRepositoryAuth is the auth for an AppRepository resource

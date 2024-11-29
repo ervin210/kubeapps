@@ -1,15 +1,5 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
@@ -17,13 +7,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/bufbuild/connect-go"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/kubeapps/kubeapps/cmd/apprepository-controller/pkg/apis/apprepository/v1alpha1"
-	corev1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/plugins/pkg/resourcerefs/resourcerefstest"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/vmware-tanzu/kubeapps/cmd/apprepository-controller/pkg/apis/apprepository/v1alpha1"
+	corev1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/pkg/resourcerefs/resourcerefstest"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -35,17 +24,17 @@ func TestGetInstalledPackageResourceRefs(t *testing.T) {
 	}
 
 	type testCase struct {
-		baseTestCase       resourcerefstest.TestCase
-		request            *corev1.GetInstalledPackageResourceRefsRequest
-		expectedResponse   *corev1.GetInstalledPackageResourceRefsResponse
-		expectedStatusCode codes.Code
+		baseTestCase      resourcerefstest.TestCase
+		request           *corev1.GetInstalledPackageResourceRefsRequest
+		expectedResponse  *corev1.GetInstalledPackageResourceRefsResponse
+		expectedErrorCode connect.Code
 	}
 
 	// newTestCase is a function to take an existing test-case
 	// (a so-called baseTestCase in pkg/resourcerefs module, which contains a LOT of useful data)
 	// and "enrich" it with some new fields to create a different kind of test case
 	// that tests server.GetInstalledPackageResourceRefs() func
-	newTestCase := func(tc int, identifier string, response bool, code codes.Code) testCase {
+	newTestCase := func(tc int, identifier string, response bool, code connect.Code) testCase {
 		newCase := testCase{
 			baseTestCase: resourcerefstest.TestCases1[tc],
 			request: &corev1.GetInstalledPackageResourceRefsRequest{
@@ -67,25 +56,25 @@ func TestGetInstalledPackageResourceRefs(t *testing.T) {
 				ResourceRefs: resourcerefstest.TestCases1[tc].ExpectedResourceRefs,
 			}
 		}
-		newCase.expectedStatusCode = code
+		newCase.expectedErrorCode = code
 		return newCase
 	}
 
 	testCases := []testCase{
-		newTestCase(0, "my-apache", true, codes.OK),
-		newTestCase(1, "my-apache", true, codes.OK),
-		newTestCase(2, "my-apache", true, codes.OK),
-		newTestCase(3, "my-apache", true, codes.OK),
-		newTestCase(4, "my-iis", false, codes.NotFound),
-		newTestCase(5, "my-apache", false, codes.Internal),
-		// See https://github.com/kubeapps/kubeapps/issues/632
-		newTestCase(6, "my-apache", true, codes.OK),
-		newTestCase(7, "my-apache", true, codes.OK),
-		newTestCase(8, "my-apache", true, codes.OK),
+		newTestCase(0, "my-apache", true, 0),
+		newTestCase(1, "my-apache", true, 0),
+		newTestCase(2, "my-apache", true, 0),
+		newTestCase(3, "my-apache", true, 0),
+		newTestCase(4, "my-iis", false, connect.CodeNotFound),
+		newTestCase(5, "my-apache", false, connect.CodeInternal),
+		// See https://github.com/vmware-tanzu/kubeapps/issues/632
+		newTestCase(6, "my-apache", true, 0),
+		newTestCase(7, "my-apache", true, 0),
+		newTestCase(8, "my-apache", true, 0),
 		// See https://kubernetes.io/docs/reference/kubernetes-api/authorization-resources/role-v1/#RoleList
-		newTestCase(9, "my-apache", true, codes.OK),
+		newTestCase(9, "my-apache", true, 0),
 		// See https://kubernetes.io/docs/reference/kubernetes-api/authorization-resources/cluster-role-v1/#ClusterRoleList
-		newTestCase(10, "my-apache", true, codes.OK),
+		newTestCase(10, "my-apache", true, 0),
 	}
 
 	ignoredFields := cmpopts.IgnoreUnexported(
@@ -119,13 +108,16 @@ func TestGetInstalledPackageResourceRefs(t *testing.T) {
 			})
 			defer cleanup()
 
-			response, err := server.GetInstalledPackageResourceRefs(context.Background(), tc.request)
+			response, err := server.GetInstalledPackageResourceRefs(context.Background(), connect.NewRequest(tc.request))
 
-			if got, want := status.Code(err), tc.expectedStatusCode; got != want {
+			if got, want := connect.CodeOf(err), tc.expectedErrorCode; err != nil && got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
+			if tc.expectedErrorCode != 0 {
+				return
+			}
 
-			if got, want := response, tc.expectedResponse; !cmp.Equal(want, got, ignoredFields) {
+			if got, want := response.Msg, tc.expectedResponse; !cmp.Equal(want, got, ignoredFields) {
 				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, ignoredFields))
 			}
 		})

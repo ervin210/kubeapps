@@ -1,3 +1,6 @@
+// Copyright 2021-2024 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import actions from "actions";
 import React from "react";
 import { Helmet } from "react-helmet";
@@ -12,17 +15,10 @@ interface IHeadManagerProps {
   children: React.ReactNode;
 }
 
-export function getThemeFile(theme: SupportedThemes) {
-  const lightThemeFile = "./clr-ui.min.css";
-  const darkThemeFile = "./clr-ui-dark.min.css";
-  switch (theme) {
-    case SupportedThemes.light:
-      return lightThemeFile;
-    case SupportedThemes.dark:
-      return darkThemeFile;
-    default:
-      return lightThemeFile;
-  }
+// Since clr-ui was updated, hot css file switching is no longer required
+// See https://github.com/vmware-tanzu/kubeapps/pull/7483
+export function getThemeFile(_theme: SupportedThemes) {
+  return "./clr-ui.min.css";
 }
 export default function HeadManager({ children }: IHeadManagerProps) {
   const intl = useIntl();
@@ -42,18 +38,26 @@ export default function HeadManager({ children }: IHeadManagerProps) {
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-        <link rel="icon" type="image/png" href="./favicon-196x196.png" sizes="196x196" />
-        <link rel="icon" type="image/png" href="./favicon-32x32.png" sizes="32x32" />
-        <link rel="icon" type="image/png" href="./favicon-16x16.png" sizes="16x16" />
-        <link rel="icon" type="image/png" href="./favicon-128.png" sizes="128x128" />
-        <link rel="apple-touch-icon" href="./favicon-196x196.png" />
-        <link rel="manifest" href="./manifest.json" />
+        {/* generated with https://realfavicongenerator.net/ */}
+        <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+        <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+        <link rel="manifest" href="/site.webmanifest" />
+        <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#0091da" />
+        <link rel="shortcut icon" href="/favicon.ico" />
+        <meta name="msapplication-TileColor" content="#0091da" />
+        <meta name="msapplication-config" content="/browserconfig.xml" />
+        <meta name="theme-color" content="#ffffff" />
 
         {/*  Allow to load custom styling different. The dashboard webserver will return this style file.  */}
         <link rel="stylesheet" type="text/css" href="./custom_style.css" />
 
         {/*  Set the clarity-ui css style */}
-        <link rel="stylesheet" type="text/css" href={getThemeFile(SupportedThemes[theme])} />
+        <link
+          rel="stylesheet"
+          type="text/css"
+          href={getThemeFile(SupportedThemes[theme as keyof typeof SupportedThemes])}
+        />
 
         <meta name="theme-color" content="#304250" />
         <meta

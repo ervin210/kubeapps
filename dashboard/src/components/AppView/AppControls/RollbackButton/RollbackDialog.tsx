@@ -1,11 +1,14 @@
+// Copyright 2019-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsButton } from "@cds/react/button";
 import { CdsControlMessage } from "@cds/react/forms";
 import { CdsModal, CdsModalActions, CdsModalContent, CdsModalHeader } from "@cds/react/modal";
 import { CdsSelect } from "@cds/react/select";
-import Alert from "components/js/Alert";
+import AlertGroup from "components/AlertGroup";
+import LoadingWrapper from "components/LoadingWrapper";
 import { useEffect, useState } from "react";
 import { DeleteError, FetchWarning } from "shared/types";
-import LoadingWrapper from "../../../LoadingWrapper/LoadingWrapper";
 import "./RollbackDialog.css";
 
 interface IRollbackDialogProps {
@@ -56,15 +59,17 @@ function RollbackDialog({
           <CdsModalContent>
             {error &&
               (error.constructor === FetchWarning ? (
-                <Alert theme="warning">
-                  There is a problem with this package: {error["message"]}
-                </Alert>
+                <AlertGroup withMargin={false} status="warning">
+                  There is a problem with this package: {error["message"]}.
+                </AlertGroup>
               ) : error.constructor === DeleteError ? (
-                <Alert theme="danger">
-                  Unable to delete the application. Received: {error["message"]}
-                </Alert>
+                <AlertGroup withMargin={false} status="danger">
+                  Unable to delete the application. Received: {error["message"]}.
+                </AlertGroup>
               ) : (
-                <Alert theme="danger">An error occurred: {error["message"]}</Alert>
+                <AlertGroup withMargin={false} status="danger">
+                  An error occurred: {error["message"]}.
+                </AlertGroup>
               ))}
             <LoadingWrapper className="center" loadingText="Loading, please wait" loaded={!loading}>
               {disableRollback ? (

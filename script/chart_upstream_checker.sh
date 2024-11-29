@@ -1,55 +1,65 @@
 #!/bin/bash
 
-# Copyright 2021 VMware. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright 2021-2022 the Kubeapps contributors.
+# SPDX-License-Identifier: Apache-2.0
 
 set -o errexit
 set -o nounset
 set -o pipefail
 
-source $(dirname $0)/chart_sync_utils.sh
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/script/lib/liblog.sh"
+source "$ROOT_DIR/script/chart_sync_utils.sh"
 
 USERNAME=${1:?Missing git username}
 EMAIL=${2:?Missing git email}
 GPG_KEY=${3:?Missing git gpg key}
 FORKED_SSH_KEY_FILENAME=${4:?Missing forked ssh key filename}
-CHARTS_REPO_ORIGINAL=${5:?Missing base chart repository}
-BRANCH_CHARTS_REPO_ORIGINAL=${6:?Missing base chart repository}
-CHARTS_REPO_FORKED=${7:?Missing forked chart repository}
-BRANCH_CHARTS_REPO_FORKED=${8:?Missing forked chart repository}
-KUBEAPPS_REPO=${9:?Missing kubeapps repository}
-BRANCH_KUBEAPPS_REPO=${10:?Missing kubeapps repository branch}
+CHARTS_REPO_UPSTREAM=${5:?Missing base chart repository}
+CHARTS_REPO_UPSTREAM_BRANCH=${6:?Missing base chart repository}
+CHARTS_REPO_FORK=${7:?Missing forked chart repository}
+CHARTS_REPO_FORK_BRANCH=${8:?Missing forked chart repository}
+KUBEAPPS_REPO_UPSTREAM=${9:?Missing kubeapps repository}
+KUBEAPPS_REPO_UPSTREAM_BRANCH=${10:?Missing kubeapps repository branch}
+README_GENERATOR_REPO=${11:?Missing readme generator repository}
+LOCAL_KUBEAPPS_REPO_PATH=${PROJECT_DIR:?PROJECT_DIR not defined}
+
+info "LOCAL_KUBEAPPS_REPO_PATH: ${LOCAL_KUBEAPPS_REPO_PATH}"
+info "USERNAME: ${USERNAME}"
+info "EMAIL: ${EMAIL}"
+info "GPG_KEY: ${GPG_KEY}"
+info "FORKED_SSH_KEY_FILENAME: ${FORKED_SSH_KEY_FILENAME}"
+info "CHARTS_REPO_UPSTREAM: ${CHARTS_REPO_UPSTREAM}"
+info "CHARTS_REPO_UPSTREAM_BRANCH: ${CHARTS_REPO_UPSTREAM_BRANCH}"
+info "CHARTS_REPO_FORK: ${CHARTS_REPO_FORK}"
+info "CHARTS_REPO_FORK_BRANCH: ${CHARTS_REPO_FORK_BRANCH}"
+info "KUBEAPPS_REPO_UPSTREAM: ${KUBEAPPS_REPO_UPSTREAM}"
+info "KUBEAPPS_REPO_UPSTREAM_BRANCH: ${KUBEAPPS_REPO_UPSTREAM_BRANCH}"
+info "README_GENERATOR_REPO: ${README_GENERATOR_REPO}"
 
 currentVersion=$(grep -oP '(?<=^version: ).*' <"${KUBEAPPS_CHART_DIR}/Chart.yaml")
-externalVersion=$(curl -s "https://raw.githubusercontent.com/${CHARTS_REPO_ORIGINAL}/${BRANCH_CHARTS_REPO_ORIGINAL}/${CHART_REPO_PATH}/Chart.yaml" | grep -oP '(?<=^version: ).*')
+externalVersion=$(curl -s "https://raw.githubusercontent.com/${CHARTS_REPO_UPSTREAM}/${CHARTS_REPO_UPSTREAM_BRANCH}/${CHART_REPO_PATH}/Chart.yaml" | grep -oP '(?<=^version: ).*')
 semverCompare=$(semver compare "${currentVersion}" "${externalVersion}")
+
+info "currentVersion: ${currentVersion}"
+info "externalVersion: ${externalVersion}"
 
 # If current version is less than the chart external version, then retrieve the changes and send an internal PR with them
 if [[ ${semverCompare} -lt 0 ]]; then
     echo "Current chart version (${currentVersion}) is less than the chart external version (${externalVersion})"
-    TMP_DIR=$(mktemp -u)/charts
-    mkdir -p "${TMP_DIR}"
+    LOCAL_CHARTS_REPO_FORK=$(mktemp -u)/charts
+    mkdir -p "${LOCAL_CHARTS_REPO_FORK}"
 
-    git clone "https://github.com/${CHARTS_REPO_FORKED}" "${TMP_DIR}" --depth 1 --no-single-branch
-    configUser "${TMP_DIR}" "${USERNAME}" "${EMAIL}" "${GPG_KEY}"
-    configUser "${PROJECT_DIR}" "${USERNAME}" "${EMAIL}" "${GPG_KEY}"
+    GIT_SSH_COMMAND="ssh -i ~/.ssh/${FORKED_SSH_KEY_FILENAME}" git clone "git@github.com:${CHARTS_REPO_FORK}" "${LOCAL_CHARTS_REPO_FORK}" --depth 1 --no-single-branch
+    configUser "${LOCAL_CHARTS_REPO_FORK}" "${USERNAME}" "${EMAIL}" "${GPG_KEY}"
+    configUser "${LOCAL_KUBEAPPS_REPO_PATH}" "${USERNAME}" "${EMAIL}" "${GPG_KEY}"
 
-    latestVersion=$(latestReleaseTag "${PROJECT_DIR}")
+    latestVersion=$(latestReleaseTag "${LOCAL_KUBEAPPS_REPO_PATH}")
     prBranchName="sync-chart-changes-${externalVersion}"
 
-    updateRepoWithRemoteChanges "${TMP_DIR}" "${latestVersion}" "${FORKED_SSH_KEY_FILENAME}" "${CHARTS_REPO_ORIGINAL}" "${BRANCH_CHARTS_REPO_ORIGINAL}" "${BRANCH_CHARTS_REPO_FORKED}"
-    commitAndSendInternalPR "${PROJECT_DIR}" "${prBranchName}" "${externalVersion}" "${KUBEAPPS_REPO}" "${BRANCH_KUBEAPPS_REPO}"
+    updateRepoWithRemoteChanges "${LOCAL_CHARTS_REPO_FORK}" "${latestVersion}" "${FORKED_SSH_KEY_FILENAME}" "${CHARTS_REPO_UPSTREAM}" "${CHARTS_REPO_UPSTREAM_BRANCH}" "${CHARTS_REPO_FORK_BRANCH}"
+    generateReadme "${README_GENERATOR_REPO}" "${KUBEAPPS_CHART_DIR}"
+    commitAndSendInternalPR "${LOCAL_KUBEAPPS_REPO_PATH}" "${prBranchName}" "${externalVersion}" "${KUBEAPPS_REPO_UPSTREAM}" "${KUBEAPPS_REPO_UPSTREAM_BRANCH}"
 elif [[ ${semverCompare} -gt 0 ]]; then
     echo "Skipping Chart sync. WARNING Current chart version (${currentVersion}) is greater than the chart external version (${externalVersion})"
 else

@@ -1,11 +1,16 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsButton } from "@cds/react/button";
 import { CdsFormGroup } from "@cds/react/forms";
 import { CdsIcon } from "@cds/react/icon";
 import { CdsInput } from "@cds/react/input";
 import { CdsModal, CdsModalActions, CdsModalContent, CdsModalHeader } from "@cds/react/modal";
 import actions from "actions";
-import Alert from "components/js/Alert";
-import Column from "components/js/Column";
+import AlertGroup from "components/AlertGroup";
+import Column from "components/Column";
+import Row from "components/Row";
+import useOutsideClick from "components/hooks/useOutsideClick";
 import { useEffect, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import * as ReactRouter from "react-router-dom";
@@ -13,13 +18,11 @@ import { Action } from "redux";
 import { ThunkDispatch } from "redux-thunk";
 import { IStoreState } from "shared/types";
 import { app } from "shared/url";
-import useOutsideClick from "../js/hooks/useOutsideClick/useOutsideClick";
-import Row from "../js/Row";
 import "./ContextSelector.css";
 
 function ContextSelector() {
   const location = ReactRouter.useLocation();
-  const history = ReactRouter.useHistory();
+  const navigate = ReactRouter.useNavigate();
   const dispatch: ThunkDispatch<IStoreState, null, Action> = useDispatch();
   const { clusters } = useSelector((state: IStoreState) => state);
   const currentCluster = clusters.clusters[clusters.currentCluster];
@@ -32,6 +35,7 @@ function ContextSelector() {
   const [namespace, setStateNamespace] = useState(namespaceSelected);
   const [newNSModalIsOpen, setNewNSModalIsOpen] = useState(false);
   const [newNS, setNewNS] = useState("");
+  const { createNamespaceLabels } = useSelector((state: IStoreState) => state.config);
 
   // Control when users click outside
   const ref = useRef(null);
@@ -65,7 +69,7 @@ function ContextSelector() {
     const nsRegex = /^\/c\/([^/]*)\/ns\/[^/]*\//;
     if (nsRegex.test(location.pathname)) {
       // Change the namespace in the route
-      history.push(
+      navigate(
         location.pathname
           .replace(nsRegex, `/c/${cluster}/ns/${namespace}/`)
           .concat(location.search),
@@ -79,11 +83,13 @@ function ContextSelector() {
     setNewNS(event.target.value);
   const createNewNS = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const created = await dispatch(actions.namespace.createNamespace(cluster, newNS));
+    const created = await dispatch(
+      actions.namespace.createNamespace(cluster, newNS, createNamespaceLabels),
+    );
     if (created) {
       closeNewNSModal();
       dispatch(actions.namespace.setNamespace(cluster, newNS));
-      history.push(app.apps.list(cluster, newNS));
+      navigate(app.apps.list(cluster, newNS));
       setOpen(false);
     }
   };
@@ -132,10 +138,13 @@ function ContextSelector() {
           </span>
           <div className="dropdown-menu-padding" role="menuitem">
             <CdsIcon size="sm" shape="cluster" />
-            <span className="kubeapps-dropdown-text">Cluster</span>
+            <label htmlFor="clusters" className="kubeapps-dropdown-text">
+              Cluster
+            </label>
             <div className="clr-select-wrapper">
               <select
                 name="clusters"
+                id="clusters"
                 className="clr-page-size-select"
                 onChange={selectCluster}
                 value={cluster}
@@ -152,10 +161,13 @@ function ContextSelector() {
           </div>
           <div className="dropdown-menu-padding" role="menuitem">
             <CdsIcon size="sm" shape="file-group" />
-            <span className="kubeapps-dropdown-text">Namespace</span>
+            <label htmlFor="namespaces" className="kubeapps-dropdown-text">
+              Namespace
+            </label>
             <div className="clr-select-wrapper">
               <select
                 name="namespaces"
+                id="namespaces"
                 className="clr-page-size-select"
                 onChange={selectNamespace}
                 value={namespace}
@@ -173,7 +185,12 @@ function ContextSelector() {
               {newNSModalIsOpen && (
                 <CdsModal closable={true} onCloseChange={closeNewNSModal}>
                   <CdsModalHeader>Create a New Namespace</CdsModalHeader>
-                  {error && <Alert theme="danger">An error occurred: {error.error.message}</Alert>}
+                  {error && (
+                    <AlertGroup status="danger">
+                      An error occurred: {error.error.message}.
+                    </AlertGroup>
+                  )}
+
                   <form onSubmit={createNewNS}>
                     <CdsModalContent>
                       <CdsFormGroup>
@@ -184,6 +201,9 @@ function ContextSelector() {
                       </CdsFormGroup>
                     </CdsModalContent>
                     <CdsModalActions>
+                      <CdsButton type="button" action="outline" onClick={closeNewNSModal}>
+                        Cancel
+                      </CdsButton>
                       <CdsButton type="submit">Submit</CdsButton>
                     </CdsModalActions>
                   </form>

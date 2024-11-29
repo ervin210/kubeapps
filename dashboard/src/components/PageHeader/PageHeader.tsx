@@ -1,14 +1,18 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import Icon from "components/Icon/Icon";
-import Column from "components/js/Column";
-import Row from "components/js/Row";
+import Column from "components/Column";
+import Row from "components/Row";
 import { getPluginIcon, getPluginPackageName } from "shared/utils";
 import "./PageHeader.css";
-import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins";
+import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins_pb";
 
 export interface IPageHeaderProps {
   title: string;
   titleSize?: "lg" | "md";
   icon?: any;
+  subtitle?: JSX.Element;
   filter?: JSX.Element;
   plugin?: Plugin;
   operator?: boolean;
@@ -19,6 +23,7 @@ function PageHeader({
   title,
   titleSize = "lg",
   icon,
+  subtitle,
   filter,
   buttons,
   plugin,
@@ -34,9 +39,10 @@ function PageHeader({
               <div className="img-container">{icon && <Icon icon={icon} />}</div>
               <div className="kubeapps-title-block">
                 {titleSize === "lg" ? <h1>{title}</h1> : <h3>{title}</h3>}
+                {subtitle && <div className="kubeapps-header-subtitle">{subtitle}</div>}
                 {plugin && (
                   <div className="kubeapps-header-subtitle">
-                    <img src={getPluginIcon(plugin)} alt="helm-icon" />
+                    <img src={getPluginIcon(plugin)} alt="package-icon" />
                     <span>{getPluginPackageName(plugin)}</span>
                   </div>
                 )}

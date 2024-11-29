@@ -1,42 +1,26 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsButton } from "@cds/react/button";
 import actions from "actions";
-import Alert from "components/js/Alert";
-import Column from "components/js/Column";
-import Row from "components/js/Row";
+import AlertGroup from "components/AlertGroup";
+import Column from "components/Column";
+import LoadingWrapper from "components/LoadingWrapper";
 import OperatorSummary from "components/OperatorSummary/OperatorSummary";
-import { push, RouterAction } from "connected-react-router";
+import Row from "components/Row";
+import { usePush } from "hooks/push";
 import { useEffect, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
+import { useParams } from "react-router-dom";
 import { Action } from "redux";
 import { ThunkDispatch } from "redux-thunk";
 import { Operators } from "shared/Operators";
-import { IPackageManifest, IPackageManifestChannel, IStoreState } from "shared/types";
+import { IPackageManifestChannel, IStoreState } from "shared/types";
 import { api, app } from "shared/url";
-import { IOperatorsStateError } from "../../reducers/operators";
-import LoadingWrapper from "../LoadingWrapper/LoadingWrapper";
 import OperatorHeader from "../OperatorView/OperatorHeader";
 import "./OperatorNew.css";
 
-export interface IOperatorNewProps {
-  operatorName: string;
-  operator?: IPackageManifest;
-  getOperator: (cluster: string, namespace: string, name: string) => Promise<void>;
-  isFetching: boolean;
-  cluster: string;
-  namespace: string;
-  errors: IOperatorsStateError;
-  createOperator: (
-    cluster: string,
-    namespace: string,
-    name: string,
-    channel: string,
-    installPlanApproval: string,
-    csv: string,
-  ) => Promise<boolean>;
-  push: (location: string) => RouterAction;
-}
-
-export default function OperatorNew({ namespace, operatorName, cluster }: IOperatorNewProps) {
+export default function OperatorNew() {
   const dispatch: ThunkDispatch<IStoreState, null, Action> = useDispatch();
 
   const [updateChannel, setUpdateChannel] = useState(
@@ -48,9 +32,12 @@ export default function OperatorNew({ namespace, operatorName, cluster }: IOpera
   // Approval strategy: true for automatic, false for manual
   const [approvalStrategyAutomatic, setApprovalStrategyAutomatic] = useState(true);
 
-  useEffect(() => {
-    dispatch(actions.operators.getOperator(cluster, namespace, operatorName));
-  }, [dispatch, cluster, namespace, operatorName]);
+  type OperatorNewParams = {
+    operator: string;
+  };
+  const params = useParams<OperatorNewParams>();
+  const operatorName = params.operator || "";
+  const push = usePush();
 
   const {
     operators: {
@@ -58,7 +45,14 @@ export default function OperatorNew({ namespace, operatorName, cluster }: IOpera
       isFetching,
       errors: { operator: errors },
     },
+    clusters: { currentCluster, clusters },
   } = useSelector((state: IStoreState) => state);
+  const namespace = clusters[currentCluster].currentNamespace;
+  const cluster = currentCluster;
+
+  useEffect(() => {
+    dispatch(actions.operators.getOperator(cluster, namespace, operatorName));
+  }, [dispatch, cluster, namespace, operatorName]);
 
   useEffect(() => {
     if (operator) {
@@ -72,16 +66,16 @@ export default function OperatorNew({ namespace, operatorName, cluster }: IOpera
 
   if (errors.fetch) {
     return (
-      <Alert theme="danger">
-        An error occurred while fetching the operator {operatorName}: {errors.fetch.message}
-      </Alert>
+      <AlertGroup status="danger">
+        An error occurred while fetching the operator {operatorName}: {errors.fetch.message}.
+      </AlertGroup>
     );
   }
   if (errors.create) {
     return (
-      <Alert theme="danger">
-        An error occurred while creating the operator {operatorName}: {errors.create.message}
-      </Alert>
+      <AlertGroup status="danger">
+        An error occurred while creating the operator {operatorName}: {errors.create.message}.
+      </AlertGroup>
     );
   }
   if (isFetching || !operator) {
@@ -89,10 +83,10 @@ export default function OperatorNew({ namespace, operatorName, cluster }: IOpera
   }
   if (!updateChannel) {
     return (
-      <Alert theme="danger">
+      <AlertGroup status="danger">
         The Operator {operatorName} doesn't define a valid channel. This is needed to extract
         required info.
-      </Alert>
+      </AlertGroup>
     );
   }
   const { currentCSVDesc } = updateChannel;
@@ -132,7 +126,7 @@ export default function OperatorNew({ namespace, operatorName, cluster }: IOpera
     );
     if (deployed) {
       // Success, redirect to operator page
-      dispatch(push(app.operators.list(cluster, namespace)));
+      push(app.operators.list(cluster, namespace));
     }
   };
 
@@ -152,9 +146,9 @@ export default function OperatorNew({ namespace, operatorName, cluster }: IOpera
           <Column span={9}>
             <form onSubmit={handleDeploy} className="kubeapps-form">
               {disableInstall && (
-                <Alert theme="danger">
-                  It's not possible to install a namespaced operator in the "operators" namespace
-                </Alert>
+                <AlertGroup status="danger">
+                  It's not possible to install a namespaced operator in the "operators" namespace.
+                </AlertGroup>
               )}
               <div className="clr-form-control">
                 <label className="clr-control-label">Update Channel</label>

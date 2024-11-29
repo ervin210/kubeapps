@@ -1,69 +1,100 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import "@testing-library/jest-dom";
+import { act, screen } from "@testing-library/react";
+import actions from "actions";
 import LoadingWrapper from "components/LoadingWrapper";
-import { Location } from "history";
-import { act } from "react-dom/test-utils";
-import { Redirect } from "react-router-dom";
-import { defaultStore, getStore, mountWrapper } from "shared/specs/mountWrapper";
+import * as ReactRedux from "react-redux";
+import { Route, Routes } from "react-router-dom";
+import { IConfigState } from "reducers/config";
+import {
+  defaultStore,
+  getStore,
+  mountWrapper,
+  renderWithProviders,
+} from "shared/specs/mountWrapper";
+import { IStoreState } from "shared/types";
 import LoginForm from "./LoginForm";
 import OAuthLogin from "./OauthLogin";
-import TokenLogin from "./TokenLogin";
 
-const emptyLocation: Location = {
-  hash: "",
-  pathname: "",
-  search: "",
-  state: "",
-  key: "",
-};
+const defaultCluster = "default-cluster";
 
-const defaultCluster = "default";
-
-const defaultProps = {
-  cluster: defaultCluster,
-  authenticate: jest.fn(),
-  authenticated: false,
-  authenticating: false,
-  authenticationError: undefined,
-  location: emptyLocation,
-  checkCookieAuthentication: jest.fn().mockReturnValue({
-    then: jest.fn(f => f()),
-  }),
-  oauthLoginURI: "",
-  appVersion: "devel",
-  authProxySkipLoginPage: false,
-};
+let spyOnUseDispatch: jest.SpyInstance;
+beforeEach(() => {
+  const mockDispatch = jest.fn(res => res);
+  spyOnUseDispatch = jest.spyOn(ReactRedux, "useDispatch").mockReturnValue(mockDispatch);
+});
+afterEach(() => {
+  spyOnUseDispatch.mockRestore();
+  jest.restoreAllMocks();
+});
 
 const authenticationError = "it's a trap";
 
 describe("while authenticating", () => {
   it("behaves like a loading component", () => {
-    const props = {
-      ...defaultProps,
-      authenticating: true,
+    const state = {
+      ...defaultStore,
+      auth: {
+        authenticating: true,
+      },
     };
-    const wrapper = mountWrapper(defaultStore, <LoginForm {...props} />);
-    expect(wrapper.find(LoadingWrapper)).toExist();
-    expect(wrapper.find(TokenLogin)).not.toExist();
-    expect(wrapper.find(OAuthLogin)).not.toExist();
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginForm />} />
+      </Routes>,
+      {
+        store: getStore(state),
+        initialEntries: ["/login"],
+      },
+    );
+
+    expect(screen.getByRole("img")).toHaveAttribute("aria-label", "Loading");
+    expect(screen.queryByLabelText("Token")).not.toBeInTheDocument();
   });
 });
 
 describe("token login form", () => {
   it("renders a token login form", () => {
-    const wrapper = mountWrapper(defaultStore, <LoginForm {...defaultProps} />);
-    expect(wrapper.find(TokenLogin)).toExist();
-    expect(wrapper.find(OAuthLogin)).not.toExist();
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginForm />} />
+      </Routes>,
+      {
+        initialEntries: ["/login"],
+      },
+    );
+
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Token")).toBeInTheDocument();
   });
 
   it("renders a link to the access control documentation", () => {
-    const wrapper = mountWrapper(defaultStore, <LoginForm {...defaultProps} />);
-    expect(wrapper.find("a").props()).toMatchObject({
-      href: "https://github.com/kubeapps/kubeapps/blob/devel/docs/user/access-control.md",
-      target: "_blank",
-    });
+    const state = {
+      ...defaultStore,
+      config: {
+        appVersion: "devel",
+      },
+    };
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginForm />} />
+      </Routes>,
+      {
+        initialEntries: ["/login"],
+        store: getStore(state),
+      },
+    );
+
+    expect(screen.queryByRole("link", { name: "More Info" })).toHaveAttribute(
+      "href",
+      "https://github.com/vmware-tanzu/kubeapps/blob/devel/site/content/docs/latest/howto/access-control.md",
+    );
   });
 
   it("updates the token in the state when the input is changed", () => {
-    const wrapper = mountWrapper(defaultStore, <LoginForm {...defaultProps} />);
+    const wrapper = mountWrapper(defaultStore, <LoginForm />);
     let input = wrapper.find("input#token");
     act(() => {
       input.simulate("change", {
@@ -78,84 +109,153 @@ describe("token login form", () => {
 
   describe("redirect if authenticated", () => {
     it("redirects to / if no current location", () => {
-      const wrapper = mountWrapper(
-        defaultStore,
-        <LoginForm {...defaultProps} authenticated={true} />,
+      const state = {
+        ...defaultStore,
+        auth: {
+          authenticated: true,
+        },
+      };
+      renderWithProviders(
+        <Routes>
+          <Route path="/login" element={<LoginForm />} />
+          <Route path="/" element={<h1>home</h1>} />
+        </Routes>,
+        {
+          store: getStore(state),
+          initialEntries: ["/login"],
+        },
       );
-      const redirect = wrapper.find(Redirect);
-      expect(redirect.props()).toEqual({ to: { pathname: "/" } });
-    });
 
-    it("redirects to previous location", () => {
-      const location = Object.assign({}, emptyLocation);
-      location.state = { from: "/test" };
-      const wrapper = mountWrapper(
-        defaultStore,
-        <LoginForm {...defaultProps} authenticated={true} location={location} />,
-      );
-      const redirect = wrapper.find(Redirect);
-      expect(redirect.props()).toEqual({ to: "/test" });
+      expect(screen.getByRole("heading", { name: "home" })).toBeInTheDocument();
     });
   });
 
   it("calls the authenticate handler when the form is submitted", () => {
-    const authenticate = jest.fn();
-    const wrapper = mountWrapper(
-      defaultStore,
-      <LoginForm {...defaultProps} authenticate={authenticate} />,
-    );
+    const authenticate = jest.fn().mockReturnValue({
+      then: jest.fn(f => f()),
+      catch: jest.fn(f => f()),
+    });
+    actions.auth.authenticate = authenticate;
+    const wrapper = mountWrapper(defaultStore, <LoginForm />);
     act(() => {
       wrapper.find("input#token").simulate("change", { target: { value: "f00b4r" } });
     });
     act(() => {
       wrapper.find("form").simulate("submit", { preventDefault: jest.fn() });
     });
-    expect(authenticate).toBeCalledWith(defaultCluster, "f00b4r");
+    expect(authenticate).toBeCalledWith(defaultCluster, "f00b4r", false);
+  });
+
+  it("calls the authenticate handler if a token is passed as query param", () => {
+    const authenticate = jest.fn().mockReturnValue({
+      then: jest.fn(f => f()),
+      catch: jest.fn(f => f()),
+    });
+    actions.auth.authenticate = authenticate;
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginForm />} />
+      </Routes>,
+      {
+        store: defaultStore,
+        initialEntries: ["/login?token=f00b4r"],
+      },
+    );
+
+    expect(authenticate).toBeCalledWith(defaultCluster, "f00b4r", false);
+  });
+
+  it("calls the authenticate handler just once if a failed token is passed as query param", () => {
+    const authenticate = jest.fn().mockReturnValue({
+      then: jest.fn(f => f()),
+      catch: jest.fn(f => f()),
+    });
+    actions.auth.authenticate = authenticate;
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginForm />} />
+      </Routes>,
+      {
+        store: defaultStore,
+        initialEntries: ["/login?token=bad-token"],
+      },
+    );
+
+    expect(authenticate).toBeCalledWith(defaultCluster, "bad-token", false);
+    expect(authenticate).toBeCalledTimes(1);
+  });
+
+  it("does not call the authenticate handler in oauth login if token is passed as query param", () => {
+    const authenticate = jest.fn();
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginForm />} />
+      </Routes>,
+      {
+        store: defaultStore,
+        initialEntries: ["/login?token=f00b4r"],
+      },
+    );
+
+    expect(authenticate).not.toBeCalled();
   });
 
   it("displays an error if the authentication error is passed", () => {
-    const wrapper = mountWrapper(
-      defaultStore,
-      <LoginForm {...defaultProps} authenticationError={authenticationError} />,
-    );
+    const state = {
+      ...defaultStore,
+      auth: {
+        authenticationError,
+      },
+    };
+    const wrapper = mountWrapper(getStore(state), <LoginForm />);
 
     expect(wrapper.find(".error").exists()).toBe(true);
   });
 
   it("does not display the oauth login if oauthLoginURI provided", () => {
-    const props = {
-      ...defaultProps,
-      oauthLoginURI: "",
-    };
-
-    const wrapper = mountWrapper(defaultStore, <LoginForm {...props} />);
+    const wrapper = mountWrapper(defaultStore, <LoginForm />);
 
     expect(wrapper.find("a.button").exists()).toBe(false);
   });
 });
 
 describe("oauth login form", () => {
-  const props = {
-    ...defaultProps,
-    oauthLoginURI: "/sign/in",
-  };
   it("does not display the token login if oauthLoginURI provided", () => {
-    const wrapper = mountWrapper(defaultStore, <LoginForm {...props} />);
+    const state = {
+      ...defaultStore,
+      config: {
+        oauthLoginURI: "/sign/in",
+        authProxyEnabled: true,
+      } as IConfigState,
+    };
+    const checkCookieAuthentication = jest.fn().mockReturnValue({
+      then: jest.fn(() => false),
+      catch: jest.fn(() => false),
+    });
+    actions.auth.checkCookieAuthentication = checkCookieAuthentication;
+    const wrapper = mountWrapper(getStore(state), <LoginForm />);
 
     expect(wrapper.find("input#token").exists()).toBe(false);
   });
 
   it("displays the oauth login if authProxyEnabled", () => {
+    const checkCookieAuthentication = jest.fn().mockReturnValue({
+      then: jest.fn(f => f()),
+      catch: jest.fn(f => f()),
+    });
+    actions.auth.checkCookieAuthentication = checkCookieAuthentication;
+
     const state = {
       ...defaultStore,
       config: {
         authProxyEnabled: true,
-      },
+        oauthLoginURI: "/sign/in",
+      } as IConfigState,
     };
-    const wrapper = mountWrapper(getStore({ ...state }), <LoginForm {...props} />);
-    expect(props.checkCookieAuthentication).toHaveBeenCalled();
+    const wrapper = mountWrapper(getStore({ ...state } as Partial<IStoreState>), <LoginForm />);
+    expect(checkCookieAuthentication).toHaveBeenCalled();
     expect(wrapper.find(OAuthLogin)).toExist();
-    expect(wrapper.find("a").findWhere(a => a.prop("href") === props.oauthLoginURI)).toExist();
+    expect(wrapper.find("a").findWhere(a => a.prop("href") === "/sign/in")).toExist();
   });
 
   it("doesn't render the login form if the cookie has not been checked yet", () => {
@@ -163,15 +263,16 @@ describe("oauth login form", () => {
       ...defaultStore,
       config: {
         authProxyEnabled: true,
-      },
+        oauthLoginURI: "/sign/in",
+      } as IConfigState,
     };
-    const props2 = {
-      ...props,
-      checkCookieAuthentication: jest.fn().mockReturnValue({
-        then: jest.fn(() => false),
-      }),
-    };
-    const wrapper = mountWrapper(getStore({ ...state }), <LoginForm {...props2} />);
+    const checkCookieAuthentication = jest.fn().mockReturnValue({
+      then: jest.fn(() => false),
+      catch: jest.fn(() => false),
+    });
+    actions.auth.checkCookieAuthentication = checkCookieAuthentication;
+
+    const wrapper = mountWrapper(getStore({ ...state } as Partial<IStoreState>), <LoginForm />);
     expect(wrapper.find(LoadingWrapper)).toExist();
     expect(wrapper.find(OAuthLogin)).not.toExist();
   });
@@ -184,7 +285,23 @@ describe("oauth login form", () => {
       writable: true,
       value: { replace: jest.fn() },
     });
-    mountWrapper(defaultStore, <LoginForm {...props} authProxySkipLoginPage={true} />);
-    expect(window.location.replace).toHaveBeenCalledWith(props.oauthLoginURI);
+    const state = {
+      ...defaultStore,
+      config: {
+        authProxySkipLoginPage: true,
+        oauthLoginURI: "/sign/in",
+        authProxyEnabled: true,
+      },
+    };
+    const checkCookieAuthentication = jest.fn().mockReturnValue({
+      then: jest.fn(() => true),
+      catch: jest.fn(() => true),
+    });
+    actions.auth.checkCookieAuthentication = checkCookieAuthentication;
+
+    act(() => {
+      mountWrapper(getStore(state), <LoginForm />);
+    });
+    expect(window.location.replace).toHaveBeenCalledWith("/sign/in");
   });
 });

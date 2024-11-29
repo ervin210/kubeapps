@@ -1,24 +1,20 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2024 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package httpclient
 
 import (
+	"crypto/tls"
 	"crypto/x509"
-	errors "errors"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
-
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 const pemCert = `
@@ -75,7 +71,10 @@ func TestSetClientProxy(t *testing.T) {
 
 		testerror := errors.New("Test Proxy Error")
 		proxyFunc := func(r *http.Request) (*url.URL, error) { return nil, testerror }
-		SetClientProxy(client, proxyFunc)
+		err := SetClientProxy(client, proxyFunc)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		if transport.Proxy == nil {
 			t.Fatal("expected proxy to have been set")
@@ -100,7 +99,14 @@ func TestSetClientTls(t *testing.T) {
 			t.Fatalf("%+v", err)
 		}
 
-		SetClientTLS(client, systemCertPool, nil, true)
+		tlsConf := &tls.Config{
+			RootCAs:            systemCertPool,
+			InsecureSkipVerify: true,
+		}
+		err = SetClientTLS(client, tlsConf)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		if transport.TLSClientConfig == nil {
 			t.Fatal("expected TLS config to have been set but it is nil")
@@ -110,6 +116,34 @@ func TestSetClientTls(t *testing.T) {
 		}
 		if transport.TLSClientConfig.InsecureSkipVerify != true {
 			t.Fatal("expected InsecureSkipVerify to have been set to true")
+		}
+
+		expectedPayload := []byte("Bob's your uncle")
+		ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(200)
+			_, err := w.Write(expectedPayload)
+			if err != nil {
+				t.Fatalf("%+v", err)
+			}
+		}))
+		ts.TLS = tlsConf
+		ts.StartTLS()
+		defer ts.Close()
+
+		resp, err := client.Get(ts.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("expected OK, got: %d", resp.StatusCode)
+		}
+
+		payload, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		} else if got, want := payload, expectedPayload; !cmp.Equal(got, want) {
+			t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got))
 		}
 	})
 }
@@ -127,24 +161,28 @@ func TestGetCertPool(t *testing.T) {
 		expectedSubjectCount int
 	}{
 		{
-			name:                 "invocation with nil cert",
-			cert:                 nil,
+			name: "invocation with nil cert",
+			cert: nil,
+			//nolint:staticcheck
 			expectedSubjectCount: len(systemCertPool.Subjects()),
 		},
 		{
-			name:                 "invocation with empty cert",
-			cert:                 []byte{},
+			name: "invocation with empty cert",
+			cert: []byte{},
+			//nolint:staticcheck
 			expectedSubjectCount: len(systemCertPool.Subjects()),
 		},
 		{
-			name:                 "invocation with valid cert",
-			cert:                 []byte(pemCert),
+			name: "invocation with valid cert",
+			cert: []byte(pemCert),
+			//nolint:staticcheck
 			expectedSubjectCount: len(systemCertPool.Subjects()) + 1,
 		},
 		{
-			name:                 "invocation with invalid cert",
-			cert:                 []byte("not valid cert"),
-			expectError:          true,
+			name:        "invocation with invalid cert",
+			cert:        []byte("not valid cert"),
+			expectError: true,
+			//nolint:staticcheck
 			expectedSubjectCount: len(systemCertPool.Subjects()) + 1,
 		},
 	}
@@ -156,7 +194,7 @@ func TestGetCertPool(t *testing.T) {
 			// no creation case
 			if tc.expectError {
 				if err == nil {
-					t.Fatalf("pool creation was expcted to fail")
+					t.Fatalf("pool creation was expected to fail")
 				}
 				return
 			}
@@ -165,6 +203,8 @@ func TestGetCertPool(t *testing.T) {
 			if err != nil {
 				t.Fatalf("error creating the cert pool: {%+v}", err)
 			}
+
+			//nolint:staticcheck
 			if got, want := len(caCertPool.Subjects()), tc.expectedSubjectCount; got != want {
 				t.Fatalf("cert pool subjects is not as expected, got {%d} instead of {%d}", got, want)
 			}
@@ -172,15 +212,7 @@ func TestGetCertPool(t *testing.T) {
 	}
 }
 
-type testClient struct {
-}
-
-func (c testClient) Do(req *http.Request) (*http.Response, error) {
-	return &http.Response{
-		Header: req.Header,
-	}, nil
-}
-func TestClientWithDefaults(t *testing.T) {
+func TestDefaultHeaderTransport(t *testing.T) {
 	initialHdrName := "TestHeader"
 	initialHdrValue := "TestHeaderValue"
 	initialHeaders := http.Header{initialHdrName: {initialHdrValue}}
@@ -227,39 +259,47 @@ func TestClientWithDefaults(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-
-			// test client to capture headers
-			testclient := &testClient{}
+			var headersReceived http.Header
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				headersReceived = r.Header
+				fmt.Fprintln(w, "Hello, world")
+			}))
+			defer server.Close()
 
 			// init invocation
-			client := &ClientWithDefaults{
-				Client:         testclient,
-				DefaultHeaders: tc.headers,
+			client := http.Client{
+				Transport: &DefaultHeaderTransport{
+					DefaultHeaders: tc.headers,
+					Transport:      http.DefaultTransport,
+				},
 			}
 
 			requestHeaders := http.Header{}
 			for k, v := range tc.initialHeaders {
 				requestHeaders[k] = v
 			}
+			testURL, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatalf("%+v", err)
+			}
 			request := &http.Request{
 				Header: requestHeaders,
+				URL:    testURL,
 			}
 
 			// invocation
-			response, err := client.Do(request)
-			if err != nil || response == nil || response.Header == nil {
-				t.Fatal("unexpected error durint invocation")
+			_, err = client.Do(request)
+			if err != nil {
+				t.Fatalf("unexpected error during invocation: %+v", err)
 			}
-
-			// check
-			if len(response.Header) != len(tc.expectedHeaders) {
-				t.Fatalf("response header length differs from expected, got {%+v} when expecting {%+v}", response.Header, tc.expectedHeaders)
+			// The default transport adds `Accept-Encoding` and `User-Agent`.
+			if len(headersReceived) != len(tc.expectedHeaders)+2 {
+				t.Fatalf("response header length differs from expected, got {%+v} when expecting {%+v}", headersReceived, tc.expectedHeaders)
 			}
-			for k := range tc.expectedHeaders {
-				got := response.Header.Get(k)
-				expected := tc.expectedHeaders.Get(k)
-				if got != expected {
-					t.Fatalf("response header differs from expected, got {%s} when expecting {%s}", got, expected)
+			for k, expected := range tc.expectedHeaders {
+				got := headersReceived.Get(k)
+				if got != expected[0] {
+					t.Fatalf("requested header differs from expected, got {%s} when expecting {%s}", got, expected)
 				}
 			}
 		})

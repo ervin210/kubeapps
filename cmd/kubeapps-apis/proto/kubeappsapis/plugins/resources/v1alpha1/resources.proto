@@ -1,6 +1,9 @@
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 syntax = "proto3";
 package kubeappsapis.plugins.resources.v1alpha1;
-option go_package = "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/plugins/resources/v1alpha1";
+option go_package = "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/plugins/resources/v1alpha1";
 
 import "kubeappsapis/core/packages/v1alpha1/packages.proto";
 
@@ -45,6 +48,11 @@ service ResourcesService {
     rpc CreateSecret(CreateSecretRequest) returns (CreateSecretResponse) {
         option (google.api.http) = {
             post: "/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/secrets"
+        };
+    }
+    rpc CanI(CanIRequest) returns (CanIResponse) {
+        option (google.api.http) = {
+            post: "/plugins/resources/v1alpha1/c/{context.cluster}/can-i"
         };
     }
 }
@@ -141,6 +149,11 @@ message CreateNamespaceRequest {
     //
     // The context of the namespace being created.
     kubeappsapis.core.packages.v1alpha1.Context context = 1;
+
+    // Labels
+    //
+    // The additional labels added to the namespace at creation time
+    map<string, string> labels = 2;
 }
 
 // CreateNamespaceResponse
@@ -233,4 +246,32 @@ message GetSecretNamesResponse {
     //
     // The list of Service Account names.
     map<string, SecretType> secret_names = 1;
+}
+
+// CanIRequest
+//
+// Request for CanI operation
+message CanIRequest {
+    // The context (cluster/namespace) for the can-i request
+    // "" (empty) namespace means "all"
+    kubeappsapis.core.packages.v1alpha1.Context context = 1;
+    // Group API Group of the Resource.  "*" means all.
+    // +optional
+    string group = 2;
+    // Resource is one of the existing resource types.  "*" means all.
+    // +optional
+    string resource = 3;
+    // Verb is a kubernetes resource API verb, like: get, list, watch, create, update, delete, proxy.  "*" means all.
+    // +optional
+    string verb = 4;
+}
+
+// CanIResponse
+//
+// Response for CanI operation
+message CanIResponse {
+    // allowed
+    //
+    // True if operation is allowed
+    bool allowed = 1;
 }

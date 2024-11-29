@@ -598,6 +598,76 @@ func local_request_ResourcesService_CreateSecret_0(ctx context.Context, marshale
 
 }
 
+var (
+	filter_ResourcesService_CanI_0 = &utilities.DoubleArray{Encoding: map[string]int{"context": 0, "cluster": 1}, Base: []int{1, 1, 1, 0}, Check: []int{0, 1, 2, 3}}
+)
+
+func request_ResourcesService_CanI_0(ctx context.Context, marshaler runtime.Marshaler, client ResourcesServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var protoReq CanIRequest
+	var metadata runtime.ServerMetadata
+
+	var (
+		val string
+		ok  bool
+		err error
+		_   = err
+	)
+
+	val, ok = pathParams["context.cluster"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "context.cluster")
+	}
+
+	err = runtime.PopulateFieldFromPath(&protoReq, "context.cluster", val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "context.cluster", err)
+	}
+
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_ResourcesService_CanI_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
+	msg, err := client.CanI(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+
+}
+
+func local_request_ResourcesService_CanI_0(ctx context.Context, marshaler runtime.Marshaler, server ResourcesServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var protoReq CanIRequest
+	var metadata runtime.ServerMetadata
+
+	var (
+		val string
+		ok  bool
+		err error
+		_   = err
+	)
+
+	val, ok = pathParams["context.cluster"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "context.cluster")
+	}
+
+	err = runtime.PopulateFieldFromPath(&protoReq, "context.cluster", val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "context.cluster", err)
+	}
+
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_ResourcesService_CanI_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
+	msg, err := server.CanI(ctx, &protoReq)
+	return msg, metadata, err
+
+}
+
 // RegisterResourcesServiceHandlerServer registers the http handlers for service ResourcesService to "mux".
 // UnaryRPC     :call ResourcesServiceServer directly.
 // StreamingRPC :currently unsupported pending https://github.com/grpc/grpc-go/issues/906.
@@ -617,20 +687,22 @@ func RegisterResourcesServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetServiceAccountNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/serviceaccountnames"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetServiceAccountNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/serviceaccountnames"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := local_request_ResourcesService_GetServiceAccountNames_0(rctx, inboundMarshaler, server, req, pathParams)
+		resp, md, err := local_request_ResourcesService_GetServiceAccountNames_0(annotatedContext, inboundMarshaler, server, req, pathParams)
 		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_GetServiceAccountNames_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_GetServiceAccountNames_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -640,20 +712,22 @@ func RegisterResourcesServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetNamespaceNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{cluster}/namespacenames"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetNamespaceNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{cluster}/namespacenames"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := local_request_ResourcesService_GetNamespaceNames_0(rctx, inboundMarshaler, server, req, pathParams)
+		resp, md, err := local_request_ResourcesService_GetNamespaceNames_0(annotatedContext, inboundMarshaler, server, req, pathParams)
 		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_GetNamespaceNames_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_GetNamespaceNames_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -663,20 +737,22 @@ func RegisterResourcesServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CreateNamespace", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CreateNamespace", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := local_request_ResourcesService_CreateNamespace_0(rctx, inboundMarshaler, server, req, pathParams)
+		resp, md, err := local_request_ResourcesService_CreateNamespace_0(annotatedContext, inboundMarshaler, server, req, pathParams)
 		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_CreateNamespace_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_CreateNamespace_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -686,20 +762,22 @@ func RegisterResourcesServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CheckNamespaceExists", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CheckNamespaceExists", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := local_request_ResourcesService_CheckNamespaceExists_0(rctx, inboundMarshaler, server, req, pathParams)
+		resp, md, err := local_request_ResourcesService_CheckNamespaceExists_0(annotatedContext, inboundMarshaler, server, req, pathParams)
 		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_CheckNamespaceExists_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_CheckNamespaceExists_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -709,20 +787,22 @@ func RegisterResourcesServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetSecretNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/secretnames"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetSecretNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/secretnames"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := local_request_ResourcesService_GetSecretNames_0(rctx, inboundMarshaler, server, req, pathParams)
+		resp, md, err := local_request_ResourcesService_GetSecretNames_0(annotatedContext, inboundMarshaler, server, req, pathParams)
 		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_GetSecretNames_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_GetSecretNames_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -732,20 +812,47 @@ func RegisterResourcesServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CreateSecret", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/secrets"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CreateSecret", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/secrets"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := local_request_ResourcesService_CreateSecret_0(rctx, inboundMarshaler, server, req, pathParams)
+		resp, md, err := local_request_ResourcesService_CreateSecret_0(annotatedContext, inboundMarshaler, server, req, pathParams)
 		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_CreateSecret_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_CreateSecret_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+
+	})
+
+	mux.Handle("POST", pattern_ResourcesService_CanI_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CanI", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/can-i"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ResourcesService_CanI_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+
+		forward_ResourcesService_CanI_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -755,21 +862,21 @@ func RegisterResourcesServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 // RegisterResourcesServiceHandlerFromEndpoint is same as RegisterResourcesServiceHandler but
 // automatically dials to "endpoint" and closes the connection when "ctx" gets done.
 func RegisterResourcesServiceHandlerFromEndpoint(ctx context.Context, mux *runtime.ServeMux, endpoint string, opts []grpc.DialOption) (err error) {
-	conn, err := grpc.Dial(endpoint, opts...)
+	conn, err := grpc.NewClient(endpoint, opts...)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		if err != nil {
 			if cerr := conn.Close(); cerr != nil {
-				grpclog.Infof("Failed to close conn to %s: %v", endpoint, cerr)
+				grpclog.Errorf("Failed to close conn to %s: %v", endpoint, cerr)
 			}
 			return
 		}
 		go func() {
 			<-ctx.Done()
 			if cerr := conn.Close(); cerr != nil {
-				grpclog.Infof("Failed to close conn to %s: %v", endpoint, cerr)
+				grpclog.Errorf("Failed to close conn to %s: %v", endpoint, cerr)
 			}
 		}()
 	}()
@@ -794,19 +901,21 @@ func RegisterResourcesServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetResources", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/{installed_package_ref.plugin.name}/{installed_package_ref.plugin.version}/c/{installed_package_ref.context.cluster}/ns/{installed_package_ref.context.namespace}/{installed_package_ref.identifier}"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetResources", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/{installed_package_ref.plugin.name}/{installed_package_ref.plugin.version}/c/{installed_package_ref.context.cluster}/ns/{installed_package_ref.context.namespace}/{installed_package_ref.identifier}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := request_ResourcesService_GetResources_0(rctx, inboundMarshaler, client, req, pathParams)
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		resp, md, err := request_ResourcesService_GetResources_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_GetResources_0(ctx, mux, outboundMarshaler, w, req, func() (proto.Message, error) { return resp.Recv() }, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_GetResources_0(annotatedContext, mux, outboundMarshaler, w, req, func() (proto.Message, error) { return resp.Recv() }, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -814,19 +923,21 @@ func RegisterResourcesServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetServiceAccountNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/serviceaccountnames"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetServiceAccountNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/serviceaccountnames"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := request_ResourcesService_GetServiceAccountNames_0(rctx, inboundMarshaler, client, req, pathParams)
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		resp, md, err := request_ResourcesService_GetServiceAccountNames_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_GetServiceAccountNames_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_GetServiceAccountNames_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -834,19 +945,21 @@ func RegisterResourcesServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetNamespaceNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{cluster}/namespacenames"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetNamespaceNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{cluster}/namespacenames"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := request_ResourcesService_GetNamespaceNames_0(rctx, inboundMarshaler, client, req, pathParams)
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		resp, md, err := request_ResourcesService_GetNamespaceNames_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_GetNamespaceNames_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_GetNamespaceNames_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -854,19 +967,21 @@ func RegisterResourcesServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CreateNamespace", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CreateNamespace", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := request_ResourcesService_CreateNamespace_0(rctx, inboundMarshaler, client, req, pathParams)
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		resp, md, err := request_ResourcesService_CreateNamespace_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_CreateNamespace_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_CreateNamespace_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -874,19 +989,21 @@ func RegisterResourcesServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CheckNamespaceExists", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CheckNamespaceExists", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := request_ResourcesService_CheckNamespaceExists_0(rctx, inboundMarshaler, client, req, pathParams)
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		resp, md, err := request_ResourcesService_CheckNamespaceExists_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_CheckNamespaceExists_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_CheckNamespaceExists_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -894,19 +1011,21 @@ func RegisterResourcesServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetSecretNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/secretnames"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/GetSecretNames", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/secretnames"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := request_ResourcesService_GetSecretNames_0(rctx, inboundMarshaler, client, req, pathParams)
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		resp, md, err := request_ResourcesService_GetSecretNames_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_GetSecretNames_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_GetSecretNames_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -914,19 +1033,43 @@ func RegisterResourcesServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CreateSecret", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/secrets"))
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CreateSecret", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/ns/{context.namespace}/secrets"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
 		}
-		resp, md, err := request_ResourcesService_CreateSecret_0(rctx, inboundMarshaler, client, req, pathParams)
-		ctx = runtime.NewServerMetadataContext(ctx, md)
+		resp, md, err := request_ResourcesService_CreateSecret_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
 		if err != nil {
-			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
 			return
 		}
 
-		forward_ResourcesService_CreateSecret_0(ctx, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+		forward_ResourcesService_CreateSecret_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+
+	})
+
+	mux.Handle("POST", pattern_ResourcesService_CanI_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/kubeappsapis.plugins.resources.v1alpha1.ResourcesService/CanI", runtime.WithHTTPPathPattern("/plugins/resources/v1alpha1/c/{context.cluster}/can-i"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ResourcesService_CanI_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+
+		forward_ResourcesService_CanI_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -947,6 +1090,8 @@ var (
 	pattern_ResourcesService_GetSecretNames_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6, 2, 7}, []string{"plugins", "resources", "v1alpha1", "c", "context.cluster", "ns", "context.namespace", "secretnames"}, ""))
 
 	pattern_ResourcesService_CreateSecret_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6, 2, 7}, []string{"plugins", "resources", "v1alpha1", "c", "context.cluster", "ns", "context.namespace", "secrets"}, ""))
+
+	pattern_ResourcesService_CanI_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"plugins", "resources", "v1alpha1", "c", "context.cluster", "can-i"}, ""))
 )
 
 var (
@@ -963,4 +1108,6 @@ var (
 	forward_ResourcesService_GetSecretNames_0 = runtime.ForwardResponseMessage
 
 	forward_ResourcesService_CreateSecret_0 = runtime.ForwardResponseMessage
+
+	forward_ResourcesService_CanI_0 = runtime.ForwardResponseMessage
 )

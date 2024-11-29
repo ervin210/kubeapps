@@ -1,15 +1,6 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (
@@ -18,34 +9,43 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/core"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/plugins/fluxv2/packages/v1alpha1"
-	"github.com/kubeapps/kubeapps/pkg/kube"
+	pluginsv1alpha1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/core/plugins/v1alpha1"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/plugins/fluxv2/packages/v1alpha1"
+	packagesConnect "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/plugins/fluxv2/packages/v1alpha1/v1alpha1connect"
 	log "k8s.io/klog/v2"
 )
 
 // RegisterWithGRPCServer enables a plugin to register with a gRPC server
 // returning the server implementation.
-func RegisterWithGRPCServer(s grpc.ServiceRegistrar, configGetter core.KubernetesConfigGetter,
-	clustersConfig kube.ClustersConfig, pluginConfigPath string) (interface{}, error) {
-	log.Infof("+fluxv2 RegisterWithGRPCServer")
+//
+//nolint:deadcode
+func RegisterWithGRPCServer(opts pluginsv1alpha1.GRPCPluginRegistrationOptions) (interface{}, error) {
+	log.Info("+fluxv2 RegisterWithGRPCServer")
 
 	// TODO (gfichtenholt) stub channel for now. Ideally, the caller (kubeappsapis-server)
 	// passes that in and closes when is being gracefully shut down. That, or provide a
 	// 'Shutdown' hook
 	stopCh := make(chan struct{})
 
-	svr, err := NewServer(configGetter, clustersConfig.KubeappsClusterName, stopCh, pluginConfigPath)
+	svr, err := NewServer(opts.ConfigGetter, opts.ClustersConfig.KubeappsClusterName, stopCh, opts.PluginConfigPath, opts.ClientQPS, opts.ClientBurst)
 	if err != nil {
 		return nil, err
 	}
-	v1alpha1.RegisterFluxV2PackagesServiceServer(s, svr)
+	opts.Mux.Handle(packagesConnect.NewFluxV2PackagesServiceHandler(svr))
+	opts.Mux.Handle(packagesConnect.NewFluxV2RepositoriesServiceHandler(svr))
 	return svr, nil
 }
 
 // RegisterHTTPHandlerFromEndpoint enables a plugin to register an http
 // handler to translate to the gRPC request.
+//
+//nolint:deadcode
 func RegisterHTTPHandlerFromEndpoint(ctx context.Context, mux *runtime.ServeMux, endpoint string, opts []grpc.DialOption) error {
-	log.Infof("+fluxv2 RegisterHTTPHandlerFromEndpoint")
-	return v1alpha1.RegisterFluxV2PackagesServiceHandlerFromEndpoint(ctx, mux, endpoint, opts)
+	log.Info("+fluxv2 RegisterHTTPHandlerFromEndpoint")
+	err := v1alpha1.RegisterFluxV2PackagesServiceHandlerFromEndpoint(ctx, mux, endpoint, opts)
+	if err != nil {
+		return err
+	} else {
+		return v1alpha1.RegisterFluxV2RepositoriesServiceHandlerFromEndpoint(ctx, mux, endpoint, opts)
+	}
 }

@@ -1,0 +1,52 @@
+# Copyright 2022-2023 the Kubeapps contributors.
+# SPDX-License-Identifier: Apache-2.0
+
+---
+header:
+  comment: on-failure
+  license:
+    spdx-id: Apache-2.0
+    copyright-owner: the Kubeapps contributors
+
+    pattern: |
+      Copyright (?:\d{4}-\d{4}|\d{4}) the Kubeapps contributors.
+      SPDX-License-Identifier: Apache-2.0
+
+  paths-ignore:
+    - LICENSE
+    - NOTICE
+    - open_source_licenses.txt
+    - "**/*.css"
+    - "**/*.dccache"
+    - "**/*.html"
+    - "**/*.htpasswd"
+    - "**/*.json"
+    - "**/*.lock"
+    - "**/*.log"
+    - "**/*.md"
+    - "**/*.pem"
+    - "**/*.snap"
+    - "**/*.sum"
+    - "**/*.svg"
+    - "**/*.webmanifest"
+    - "**/.notempty"
+    - "**/chart/**"
+    - "**/devel/**"
+    - "**/gen/**"
+    - "**/node_modules/**"
+    - "**/site/**"
+    - "**/target/**"
+    - "cmd/kubeapps-apis/plugins/fluxv2/packages/v1alpha1/common/transport/transport.go"
+    - "cmd/kubeapps-apis/plugins/fluxv2/packages/v1alpha1/common/transport/transport_test.go"
+    - "dashboard/build/**"
+    - "dashboard/src/setupProxy.js"
+    - "integration/charts/**/_helpers.tpl"
+    - "pkg/kube/dockerconfig.go"
+
+dependency:
+  files:
+    - cmd/oci-catalog/Cargo.toml
+    - cmd/pinniped-proxy/Cargo.toml
+    - dashboard/package.json
+    - go.mod
+    - integration/package.json

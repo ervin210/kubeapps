@@ -1,22 +1,14 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package test
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"io"
 
-	log "github.com/sirupsen/logrus"
+	log "k8s.io/klog/v2"
 )
 
 type TarballFile struct {
@@ -46,6 +38,16 @@ func CreateTestTarball(w io.Writer, files []TarballFile) {
 	}
 	// Make sure to check the error on Close.
 	if err := tarw.Close(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// CreateTestTgz creates a tgz file from a slice of filename/values.
+func CreateTestTgz(w io.Writer, files []TarballFile) {
+	gzf := gzip.NewWriter(w)
+	CreateTestTarball(gzf, files)
+
+	if err := gzf.Close(); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -1,36 +1,55 @@
+# Copyright Broadcom, Inc. All Rights Reserved.
+# SPDX-License-Identifier: APACHE-2.0
+
 annotations:
   category: Infrastructure
+  licenses: Apache-2.0
+  images: |
+    - name: kubeapps-apis
+      image: docker.io/bitnami/kubeapps-apis:2.12.0-debian-12-r0
+    - name: kubeapps-apprepository-controller
+      image: docker.io/bitnami/kubeapps-apprepository-controller:2.12.0-debian-12-r0
+    - name: kubeapps-asset-syncer
+      image: docker.io/bitnami/kubeapps-asset-syncer:2.12.0-debian-12-r0
+    - name: kubeapps-dashboard
+      image: docker.io/bitnami/kubeapps-dashboard:2.12.0-debian-12-r0
+    - name: kubeapps-oci-catalog
+      image: docker.io/bitnami/kubeapps-oci-catalog:2.12.0-debian-12-r0
+    - name: kubeapps-pinniped-proxy
+      image: docker.io/bitnami/kubeapps-pinniped-proxy:2.12.0-debian-12-r0
+    - name: nginx
+      image: docker.io/bitnami/nginx:1.27.2-debian-12-r2
+    - name: oauth2-proxy
+      image: docker.io/bitnami/oauth2-proxy:7.7.1-debian-12-r1
 apiVersion: v2
 appVersion: DEVEL
 dependencies:
-  - name: common
-    repository: https://charts.bitnami.com/bitnami
-    tags:
-      - bitnami-common
-    version: 1.x.x
-  - name: postgresql
-    repository: https://charts.bitnami.com/bitnami
-    version: 10.x.x
-  # Currently redis is only used for an in-progress plugin for flux support.
-  # Our upstream bitnami/kubeapps chart should not include redis as a
-  # dependency yet, and in development we can set redis.enabled if developing
-  # other plugins only.
-  - name: redis
-    repository: https://charts.bitnami.com/bitnami
-    version: 15.x.x
-    condition: redis.enabled
-description: Kubeapps is a dashboard for your Kubernetes cluster that makes it easy to deploy and manage applications in your cluster using Helm
-home: https://kubeapps.com
-icon: https://raw.githubusercontent.com/kubeapps/kubeapps/main/docs/img/logo.png
+- condition: packaging.flux.enabled
+  name: redis
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 20.x.x
+- condition: packaging.helm.enabled
+  name: postgresql
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 16.x.x
+- name: common
+  repository: oci://registry-1.docker.io/bitnamicharts
+  tags:
+  - bitnami-common
+  version: 2.x.x
+description: Kubeapps is a web-based UI for launching and managing applications on Kubernetes. It allows users to deploy trusted applications and operators to control users access to the cluster.
+home: https://bitnami.com
+icon: https://bitnami.com/assets/stacks/kubeapps/img/kubeapps-stack-220x234.png
 keywords:
-  - helm
-  - dashboard
-  - service catalog
-  - deployment
+- helm
+- dashboard
+- service catalog
+- deployment
+kubeVersion: '>=1.21.0-0'
 maintainers:
-  - email: containers@bitnami.com
-    name: Bitnami
+- name: Broadcom, Inc. All Rights Reserved.
+  url: https://github.com/bitnami/charts
 name: kubeapps
 sources:
-  - https://github.com/kubeapps/kubeapps
-version: 7.8.0-dev1
+- https://github.com/bitnami/charts/tree/main/bitnami/kubeapps
+version: 17.0.2

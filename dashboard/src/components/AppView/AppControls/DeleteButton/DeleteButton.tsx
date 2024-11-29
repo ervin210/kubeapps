@@ -1,11 +1,15 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsIcon } from "@cds/react/icon";
 import actions from "actions";
 import ConfirmDialog from "components/ConfirmDialog/ConfirmDialog";
-import { push } from "connected-react-router";
+import { usePush } from "hooks/push";
 import {
   InstalledPackageReference,
   InstalledPackageStatus,
-} from "gen/kubeappsapis/core/packages/v1alpha1/packages";
+  InstalledPackageStatus_StatusReason,
+} from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 import { useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Action } from "redux";
@@ -29,21 +33,19 @@ export default function DeleteButton({
   const [deleting, setDeleting] = useState(false);
   const dispatch: ThunkDispatch<IStoreState, null, Action> = useDispatch();
   const error = useSelector((state: IStoreState) => state.apps.error);
+  const push = usePush();
 
   const openModal = () => setModal(true);
   const closeModal = () => setModal(false);
   const handleDeleteClick = async () => {
     setDeleting(true);
-    const deleted = await dispatch(actions.apps.deleteInstalledPackage(installedPackageRef));
+    const deleted = await dispatch(
+      actions.installedpackages.deleteInstalledPackage(installedPackageRef),
+    );
     setDeleting(false);
     if (deleted) {
-      dispatch(
-        push(
-          app.apps.list(
-            installedPackageRef.context?.cluster,
-            installedPackageRef.context?.namespace,
-          ),
-        ),
+      push(
+        app.apps.list(installedPackageRef.context?.cluster, installedPackageRef.context?.namespace),
       );
     }
   };
@@ -56,6 +58,7 @@ export default function DeleteButton({
         releaseStatus={releaseStatus}
         id="delete-button"
         disabled={disabled}
+        statusesToDeactivate={[InstalledPackageStatus_StatusReason.UNINSTALLED]}
       >
         <CdsIcon shape="trash" /> Delete
       </StatusAwareButton>

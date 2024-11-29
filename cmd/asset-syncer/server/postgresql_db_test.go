@@ -1,23 +1,10 @@
-/*
-Copyright 2021 VMware. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 // Currently these tests will be skipped entirely unless the
 // ENABLE_PG_INTEGRATION_TESTS env var is set.
 // Run the local postgres with
-// docker run --publish 5432:5432 -e ALLOW_EMPTY_PASSWORD=yes bitnami/postgresql:11.13.0-debian-10-r39
+// docker run --publish 5432:5432 -e ALLOW_EMPTY_PASSWORD=yes bitnami/postgresql:12-debian-11
 // in another terminal.
 package server
 
@@ -27,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kubeapps/kubeapps/pkg/chart/models"
-	"github.com/kubeapps/kubeapps/pkg/dbutils"
-	"github.com/kubeapps/kubeapps/pkg/dbutils/dbutilstest/pgtest"
 	_ "github.com/lib/pq"
+	"github.com/vmware-tanzu/kubeapps/pkg/chart/models"
+	"github.com/vmware-tanzu/kubeapps/pkg/dbutils"
+	"github.com/vmware-tanzu/kubeapps/pkg/dbutils/dbutilstest/pgtest"
 )
 
 func getInitializedManager(t *testing.T) (*postgresAssetManager, func()) {
@@ -43,27 +30,27 @@ func TestEnsureRepoExists(t *testing.T) {
 
 	testCases := []struct {
 		name          string
-		existingRepos []models.Repo
-		newRepo       models.Repo
+		existingRepos []models.AppRepository
+		newRepo       models.AppRepository
 		expectedID    int
 	}{
 		{
 			name: "it returns a new ID if it does not yet exist",
-			existingRepos: []models.Repo{
+			existingRepos: []models.AppRepository{
 				{Namespace: "my-namespace", Name: "other-repo"},
 				{Namespace: "other-namespace", Name: "my-repo"},
 			},
-			newRepo:    models.Repo{Namespace: "my-namespace", Name: "my-name"},
+			newRepo:    models.AppRepository{Namespace: "my-namespace", Name: "my-name"},
 			expectedID: 3,
 		},
 		{
 			name: "it returns the existing ID if the repo exists in the db",
-			existingRepos: []models.Repo{
+			existingRepos: []models.AppRepository{
 				{Namespace: "my-namespace", Name: "my-name"},
 				{Namespace: "my-namespace", Name: "other-repo"},
 				{Namespace: "other-namespace", Name: "my-repo"},
 			},
-			newRepo:    models.Repo{Namespace: "my-namespace", Name: "my-name"},
+			newRepo:    models.AppRepository{Namespace: "my-namespace", Name: "my-name"},
 			expectedID: 1,
 		},
 	}
@@ -95,20 +82,19 @@ func TestEnsureRepoExists(t *testing.T) {
 func TestImportCharts(t *testing.T) {
 	pgtest.SkipIfNoDB(t)
 
-	repo := models.Repo{
+	repo := models.AppRepository{
 		Name:      "repo-name",
 		Namespace: "repo-namespace",
 	}
 
 	testCases := []struct {
-		name   string
-		charts []models.Chart
+		name  string
+		chart models.Chart
 	}{
 		{
 			name: "it inserts the charts",
-			charts: []models.Chart{
-				{Name: "my-chart1", Repo: &repo, ID: "foo/bar:123"},
-				{Name: "my-chart2", Repo: &repo, ID: "foo/bar:456"},
+			chart: models.Chart{
+				Name: "my-chart1", Repo: &repo, ID: "foo/bar:123",
 			},
 		},
 	}
@@ -117,12 +103,8 @@ func TestImportCharts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pam, cleanup := getInitializedManager(t)
 			defer cleanup()
-			_, err := pam.EnsureRepoExists(repo.Namespace, repo.Name)
-			if err != nil {
-				t.Fatalf("%+v", err)
-			}
 
-			err = pam.importCharts(tc.charts, repo)
+			err := pam.Sync(repo, tc.chart)
 			if err != nil {
 				t.Errorf("%+v", err)
 			}
@@ -146,23 +128,23 @@ func TestInsertFiles(t *testing.T) {
 	}{
 		{
 			name:       "it inserts new chart files",
-			chartFiles: models.ChartFiles{ID: filesID, Readme: "A Readme", Repo: &models.Repo{Namespace: namespace}},
+			chartFiles: models.ChartFiles{ID: filesID, Readme: "A Readme", Repo: &models.AppRepository{Namespace: namespace}},
 			fileCount:  1,
 		},
 		{
 			name: "it updates existing chart files",
 			existingFiles: []models.ChartFiles{
-				{ID: filesID, Readme: "A Readme", Repo: &models.Repo{Namespace: namespace}},
+				{ID: filesID, Readme: "A Readme", Repo: &models.AppRepository{Namespace: namespace}},
 			},
-			chartFiles: models.ChartFiles{ID: filesID, Readme: "A New Readme", Repo: &models.Repo{Namespace: namespace}},
+			chartFiles: models.ChartFiles{ID: filesID, Readme: "A New Readme", Repo: &models.AppRepository{Namespace: namespace}},
 			fileCount:  1,
 		},
 		{
 			name: "it imports the same repo name and chart version in different namespaces",
 			existingFiles: []models.ChartFiles{
-				{ID: filesID, Readme: "A different Readme", Repo: &models.Repo{Namespace: "another-namespace"}},
+				{ID: filesID, Readme: "A different Readme", Repo: &models.AppRepository{Namespace: "another-namespace"}},
 			},
-			chartFiles: models.ChartFiles{ID: filesID, Readme: "A Readme", Repo: &models.Repo{Namespace: namespace}},
+			chartFiles: models.ChartFiles{ID: filesID, Readme: "A Readme", Repo: &models.AppRepository{Namespace: namespace}},
 			fileCount:  2,
 		},
 	}
@@ -189,7 +171,7 @@ func TestInsertFiles(t *testing.T) {
 
 func ensureFilesExist(t *testing.T, pam *postgresAssetManager, chartID string, files []models.ChartFiles) {
 	for _, f := range files {
-		pgtest.EnsureChartsExist(t, pam, []models.Chart{{ID: chartID}}, *f.Repo)
+		pgtest.EnsureChartsExist(t, pam, []models.Chart{{ID: chartID, Name: chartID}}, *f.Repo)
 		err := pam.insertFiles(chartID, f)
 		if err != nil {
 			t.Fatalf("%+v", err)
@@ -204,13 +186,13 @@ func TestDelete(t *testing.T) {
 		repoName      = "my-repo"
 		chartID       = repoName + "/my-chart"
 	)
-	repoToDelete := models.Repo{Namespace: repoNamespace, Name: repoName}
-	otherRepo := models.Repo{Namespace: "other-namespace", Name: repoName}
+	repoToDelete := models.AppRepository{Namespace: repoNamespace, Name: repoName}
+	otherRepo := models.AppRepository{Namespace: "other-namespace", Name: repoName}
 
 	testCases := []struct {
 		name           string
 		existingFiles  []models.ChartFiles
-		repo           models.Repo
+		repo           models.AppRepository
 		expectedRepos  int
 		expectedCharts int
 		expectedFiles  int
@@ -267,18 +249,18 @@ func TestRemoveMissingCharts(t *testing.T) {
 	const (
 		repoName = "my-repo"
 	)
-	repo := models.Repo{Name: repoName, Namespace: "my-namespace"}
-	repoOtherNameSameNamespace := models.Repo{Name: "other-repo", Namespace: "my-namespace"}
-	repoSameNameOtherNamespace := models.Repo{Name: repoName, Namespace: "other-namespace"}
+	repo := models.AppRepository{Name: repoName, Namespace: "my-namespace"}
+	repoOtherNameSameNamespace := models.AppRepository{Name: "other-repo", Namespace: "my-namespace"}
+	repoSameNameOtherNamespace := models.AppRepository{Name: repoName, Namespace: "other-namespace"}
 
 	testCases := []struct {
 		name string
 		// existingFiles maps a chartID to a slice of files for different
 		// versions of that chart.
-		existingFiles   map[string][]models.ChartFiles
-		remainingCharts []models.Chart
-		expectedCharts  int
-		expectedFiles   int
+		existingFiles  map[string][]models.ChartFiles
+		chartsToRemove []string
+		expectedCharts int
+		expectedFiles  int
 	}{
 		{
 			name: "it removes missing charts and files",
@@ -292,9 +274,7 @@ func TestRemoveMissingCharts(t *testing.T) {
 					{ID: "other-chart-3", Readme: "A Readme", Repo: &repo},
 				},
 			},
-			remainingCharts: []models.Chart{
-				{ID: "my-chart"},
-			},
+			chartsToRemove: []string{"other-chart"},
 			expectedCharts: 1,
 			expectedFiles:  1,
 		},
@@ -315,10 +295,7 @@ func TestRemoveMissingCharts(t *testing.T) {
 					{ID: "third-chart-3", Readme: "A Readme", Repo: &repo},
 				},
 			},
-			remainingCharts: []models.Chart{
-				{ID: "my-chart"},
-				{ID: "other-chart"},
-			},
+			chartsToRemove: []string{"third-chart"},
 			expectedCharts: 2,
 			expectedFiles:  4,
 		},
@@ -341,10 +318,7 @@ func TestRemoveMissingCharts(t *testing.T) {
 					{ID: "third-chart-3", Readme: "A Readme", Repo: &repo},
 				},
 			},
-			remainingCharts: []models.Chart{
-				{ID: "my-chart"},
-				{ID: "third-chart"},
-			},
+			chartsToRemove: []string{"other-chart"},
 			expectedCharts: 3,
 			expectedFiles:  7,
 		},
@@ -367,12 +341,25 @@ func TestRemoveMissingCharts(t *testing.T) {
 					{ID: "third-chart-3", Readme: "A Readme", Repo: &repo},
 				},
 			},
-			remainingCharts: []models.Chart{
-				{ID: "my-chart"},
-				{ID: "third-chart"},
-			},
+			chartsToRemove: []string{"other-chart"},
 			expectedCharts: 3,
 			expectedFiles:  7,
+		},
+		{
+			name: "it does not error if no missing charts to remove",
+			existingFiles: map[string][]models.ChartFiles{
+				"my-chart": {
+					{ID: "my-chart-1", Readme: "A Readme", Repo: &repo},
+				},
+				"other-chart": {
+					{ID: "other-chart-1", Readme: "A Readme", Repo: &repo},
+					{ID: "other-chart-2", Readme: "A Readme", Repo: &repo},
+					{ID: "other-chart-3", Readme: "A Readme", Repo: &repo},
+				},
+			},
+			chartsToRemove: []string{},
+			expectedCharts: 2,
+			expectedFiles:  4,
 		},
 	}
 
@@ -384,7 +371,7 @@ func TestRemoveMissingCharts(t *testing.T) {
 				ensureFilesExist(t, pam, chartID, files)
 			}
 
-			err := pam.removeMissingCharts(repo, tc.remainingCharts)
+			err := pam.RemoveMissingCharts(repo, tc.chartsToRemove)
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
@@ -406,7 +393,7 @@ func TestRepoAlreadyProcessed(t *testing.T) {
 		repoName      = "my-repo"
 		checksum      = "deadbeef"
 	)
-	repo := models.Repo{Namespace: repoNamespace, Name: repoName}
+	repo := models.AppRepository{Namespace: repoNamespace, Name: repoName}
 
 	pam, cleanup := getInitializedManager(t)
 	defer cleanup()
@@ -418,22 +405,31 @@ func TestRepoAlreadyProcessed(t *testing.T) {
 	}
 
 	// not processed when repo exists but has not been processed
-	pam.EnsureRepoExists(repoNamespace, repoName)
+	_, err := pam.EnsureRepoExists(repoNamespace, repoName)
+	if err != nil {
+		t.Errorf("%+v", err)
+	}
 	got = pam.LastChecksum(repo)
 	if got != "" {
 		t.Errorf("got: %s, want: %s", got, "")
 	}
 
-	pam.UpdateLastCheck(repoNamespace, repoName, checksum, time.Now())
+	err = pam.UpdateLastCheck(repoNamespace, repoName, checksum, time.Now())
+	if err != nil {
+		t.Errorf("%+v", err)
+	}
 	// processed when checksums match
-	pam.EnsureRepoExists(repoNamespace, repoName)
+	_, err = pam.EnsureRepoExists(repoNamespace, repoName)
+	if err != nil {
+		t.Errorf("%+v", err)
+	}
 	got = pam.LastChecksum(repo)
 	if got != checksum {
 		t.Errorf("got: %s, want: %s", got, checksum)
 	}
 
 	// it does not match the same repo in a different namespace
-	got = pam.LastChecksum(models.Repo{Namespace: "other-namespace", Name: repo.Name})
+	got = pam.LastChecksum(models.AppRepository{Namespace: "other-namespace", Name: repo.Name})
 	if got != "" {
 		t.Errorf("got: %s, want: %s", got, "")
 	}
@@ -449,7 +445,7 @@ func TestFilesExist(t *testing.T) {
 		filesID   = chartID + "-1.0"
 		digest    = "some-digest"
 	)
-	repo := models.Repo{Namespace: namespace, Name: repoName}
+	repo := models.AppRepository{Namespace: namespace, Name: repoName}
 	pam, cleanup := getInitializedManager(t)
 	defer cleanup()
 
@@ -471,10 +467,10 @@ func TestFilesExist(t *testing.T) {
 	}
 
 	// false when it exists in another repo
-	if got, want := pam.filesExist(models.Repo{Namespace: repo.Namespace, Name: "other-name"}, filesID, digest), false; got != want {
+	if got, want := pam.filesExist(models.AppRepository{Namespace: repo.Namespace, Name: "other-name"}, filesID, digest), false; got != want {
 		t.Errorf("got: %t, want: %t", got, want)
 	}
-	if got, want := pam.filesExist(models.Repo{Namespace: "other-namespace", Name: repo.Name}, filesID, digest), false; got != want {
+	if got, want := pam.filesExist(models.AppRepository{Namespace: "other-namespace", Name: repo.Name}, filesID, digest), false; got != want {
 		t.Errorf("got: %t, want: %t", got, want)
 	}
 }
@@ -489,7 +485,7 @@ func TestUpdateIcon(t *testing.T) {
 		chartID         = repoName + "/chart-id"
 	)
 	iconData := []byte("icon-data")
-	repo := models.Repo{Namespace: repoNamespace, Name: repoName}
+	repo := models.AppRepository{Namespace: repoNamespace, Name: repoName}
 
 	testCases := []struct {
 		name           string
@@ -524,7 +520,7 @@ func TestUpdateIcon(t *testing.T) {
 				for _, chartID := range chartIDs {
 					charts = append(charts, models.Chart{ID: chartID})
 				}
-				pgtest.EnsureChartsExist(t, pam, charts, models.Repo{Namespace: namespace, Name: repoName})
+				pgtest.EnsureChartsExist(t, pam, charts, models.AppRepository{Namespace: namespace, Name: repoName})
 			}
 
 			err := pam.updateIcon(repo, iconData, iconContentType, chartID)

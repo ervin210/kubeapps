@@ -1,121 +1,25 @@
-import * as moxios from "moxios";
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import MockAdapter from "axios-mock-adapter";
+import {
+  CanIRequest,
+  CanIResponse,
+} from "gen/kubeappsapis/plugins/resources/v1alpha1/resources_pb";
 import { axiosWithAuth } from "./AxiosInstance";
 import { Kube } from "./Kube";
+import KubeappsGrpcClient from "./KubeappsGrpcClient";
 
 const clusterName = "cluster-name";
 
-describe("App", () => {
+describe("Kube", () => {
+  let axiosMock: MockAdapter;
+
   beforeEach(() => {
-    // Import as "any" to avoid typescript syntax error
-    moxios.install(axiosWithAuth as any);
+    axiosMock = new MockAdapter(axiosWithAuth);
   });
   afterEach(() => {
-    moxios.uninstall(axiosWithAuth as any);
-  });
-  describe("getResourceURL", () => {
-    [
-      {
-        description: "returns the version and resource",
-        args: {
-          cluster: clusterName,
-          apiVersion: "v1",
-          resource: "pods",
-          namespaced: true,
-        },
-        result: `api/clusters/${clusterName}/api/v1/pods`,
-      },
-      {
-        description: "defaults version to api/v1 if undefined",
-        args: {
-          cluster: clusterName,
-          apiVersion: "",
-          resource: "pods",
-          namespaced: true,
-        },
-        result: `api/clusters/${clusterName}/api/v1/pods`,
-      },
-      {
-        description: "skips the namespace if non-namespaced",
-        args: {
-          cluster: clusterName,
-          apiVersion: "v1",
-          resource: "clusterroles",
-          namespaced: false,
-          namespace: "default",
-        },
-        result: `api/clusters/${clusterName}/api/v1/clusterroles`,
-      },
-      {
-        description: "returns the version, resource in a namespace",
-        args: {
-          cluster: clusterName,
-          apiVersion: "",
-          resource: "pods",
-          namespaced: true,
-          namespace: "default",
-        },
-        result: `api/clusters/${clusterName}/api/v1/namespaces/default/pods`,
-      },
-      {
-        description: "returns the version, resource in a namespace with a name",
-        args: {
-          cluster: clusterName,
-          apiVersion: "",
-          resource: "pods",
-          namespaced: true,
-          namespace: "default",
-          name: "foo",
-        },
-        result: `api/clusters/${clusterName}/api/v1/namespaces/default/pods/foo`,
-      },
-      {
-        description: "returns the version, resource in a namespace with a name and a query",
-        args: {
-          cluster: clusterName,
-          apiVersion: "",
-          resource: "pods",
-          namespaced: true,
-          namespace: "default",
-          name: "foo",
-          label: "label=bar",
-        },
-        result: `api/clusters/${clusterName}/api/v1/namespaces/default/pods/foo?label=bar`,
-      },
-    ].forEach(t => {
-      it(t.description, () => {
-        expect(
-          Kube.getResourceURL(
-            t.args.cluster,
-            t.args.apiVersion,
-            t.args.resource,
-            t.args.namespaced,
-            t.args.namespace,
-            t.args.name,
-            t.args.label,
-          ),
-        ).toBe(t.result);
-      });
-    });
-  });
-
-  describe("getResource", () => {
-    const resource = { name: "foo" };
-    beforeEach(() => {
-      moxios.stubRequest(/.*/, {
-        response: { data: resource },
-        status: 200,
-      });
-    });
-    it("should request a resource", async () => {
-      expect(
-        await Kube.getResource(clusterName, "v1", "pods", true, "default", "foo", "label=bar"),
-      ).toEqual({
-        data: resource,
-      });
-      expect(moxios.requests.mostRecent().url).toBe(
-        `api/clusters/${clusterName}/api/v1/namespaces/default/pods/foo?label=bar`,
-      );
-    });
+    axiosMock.restore();
   });
 
   describe("getAPIGroups", () => {
@@ -134,17 +38,12 @@ describe("App", () => {
         },
       },
     ];
-    beforeEach(() => {
-      moxios.stubRequest(/.*/, {
-        // Sample response to /apis
-        response: { kind: "APIGroupList", apiVersion: "v1", groups },
-        status: 200,
-      });
-    });
 
     it("should request API groups", async () => {
+      axiosMock.onGet().reply(200, { kind: "APIGroupList", apiVersion: "v1", groups });
       expect(await Kube.getAPIGroups(clusterName)).toEqual(groups);
-      expect(moxios.requests.mostRecent().url).toBe(`api/clusters/${clusterName}/apis`);
+      const request = axiosMock.history.get[0];
+      expect(request?.url).toBe(`api/clusters/${clusterName}/apis`);
     });
   });
 
@@ -241,32 +140,77 @@ describe("App", () => {
     ].forEach(t => {
       it(t.description, async () => {
         // eslint-disable-next-line redos/no-vulnerable
-        moxios.stubRequest(/.*api\/v1/, t.apiV1Response);
+        axiosMock.onGet(/.*api\/v1/).reply(t.apiV1Response.status, t.apiV1Response.response);
         const groups: any[] = [];
-        t.groups.forEach((g: any) => {
-          groups.push(g.input);
+        t.groups.forEach((group: any) => {
+          groups.push(group.input);
           // eslint-disable-next-line redos/no-vulnerable
-          moxios.stubOnce("GET", /.*apis\/.*/, g.apiResponse);
+          axiosMock.onGet(/.*apis\/.*/).replyOnce(200, group.apiResponse.response);
         });
-        expect(await Kube.getResourceKinds("cluster", groups)).toEqual(t.result);
+        expect(await Kube.getResourceKinds(clusterName, groups)).toEqual(t.result);
       });
     });
   });
 
   describe("canI", () => {
-    beforeEach(() => {
-      moxios.stubRequest(/.*/, {
-        response: { allowed: true },
-        status: 200,
-      });
+    // Create a real client, but we'll stub out the function we're interested in.
+    const client = new KubeappsGrpcClient().getResourcesServiceClientImpl();
+    let mockClientCanI: jest.MockedFunction<typeof client.canI>;
+
+    beforeEach(() => {});
+    afterEach(() => {
+      jest.resetAllMocks();
     });
+
     it("should check permissions", async () => {
-      const allowed = await Kube.canI("cluster", "v1", "namespaces", "create", "");
+      mockClientCanI = jest
+        .fn()
+        .mockImplementation(() => Promise.resolve({ allowed: true } as CanIResponse));
+      jest.spyOn(client, "canI").mockImplementation(mockClientCanI);
+      jest.spyOn(Kube, "resourcesServiceClient").mockImplementation(() => client);
+
+      const allowed = await Kube.canI(clusterName, "v1", "namespaces", "create", "");
       expect(allowed).toBe(true);
+
+      expect(Kube.resourcesServiceClient).toHaveBeenCalledWith();
+      expect(mockClientCanI).toHaveBeenCalledWith({
+        context: {
+          cluster: clusterName,
+          namespace: "",
+        },
+        group: "v1",
+        resource: "namespaces",
+        verb: "create",
+      } as CanIRequest);
     });
     it("should ignore empty clusters", async () => {
       const allowed = await Kube.canI("", "v1", "namespaces", "create", "");
       expect(allowed).toBe(false);
+      expect(Kube.resourcesServiceClient).not.toHaveBeenCalled();
+    });
+    it("should default to disallow when errors", async () => {
+      mockClientCanI = jest.fn().mockImplementation(
+        () =>
+          new Promise(() => {
+            throw new Error("error");
+          }),
+      );
+      jest.spyOn(client, "canI").mockImplementation(mockClientCanI);
+      jest.spyOn(Kube, "resourcesServiceClient").mockImplementation(() => client);
+
+      const allowed = await Kube.canI(clusterName, "v1", "secrets", "list", "");
+      expect(allowed).toBe(false);
+
+      expect(Kube.resourcesServiceClient).toHaveBeenCalled();
+      expect(mockClientCanI).toHaveBeenCalledWith({
+        context: {
+          cluster: clusterName,
+          namespace: "",
+        },
+        group: "v1",
+        resource: "secrets",
+        verb: "list",
+      } as CanIRequest);
     });
   });
 });

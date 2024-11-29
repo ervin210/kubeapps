@@ -1,14 +1,18 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import actions from "actions";
-import Alert from "components/js/Alert";
-import Column from "components/js/Column";
-import Row from "components/js/Row";
+import AlertGroup from "components/AlertGroup";
+import Column from "components/Column";
 import OperatorSummary from "components/OperatorSummary/OperatorSummary";
 import OperatorHeader from "components/OperatorView/OperatorHeader";
-import { push } from "connected-react-router";
-import * as yaml from "js-yaml";
+import Row from "components/Row";
+import { usePush } from "hooks/push";
+import placeholder from "icons/placeholder.svg";
 import { get } from "lodash";
 import { useEffect, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
+import { useParams } from "react-router-dom";
 import { Action } from "redux";
 import { ThunkDispatch } from "redux-thunk";
 import {
@@ -18,20 +22,8 @@ import {
   IStoreState,
 } from "shared/types";
 import * as url from "shared/url";
-import placeholder from "../../placeholder.png";
+import { parseToString } from "shared/yamlUtils";
 import OperatorInstanceFormBody from "../OperatorInstanceFormBody/OperatorInstanceFormBody";
-
-export interface IOperatorInstanceFormProps {
-  csvName: string;
-  crdName: string;
-  cluster: string;
-  namespace: string;
-}
-
-export interface IOperatorInstanceFormBodyState {
-  defaultValues: string;
-  crd?: IClusterServiceVersionCRD;
-}
 
 export function parseCSV(
   csv: IClusterServiceVersion,
@@ -60,7 +52,7 @@ export function parseCSV(
         examples.forEach(example => {
           if (example.kind === kind) {
             // Found the example, set the default values
-            setDefaultValues(yaml.dump(example));
+            setDefaultValues(parseToString(example));
           }
         });
       }
@@ -68,24 +60,11 @@ export function parseCSV(
   });
 }
 
-export default function DeploymentFormBody({
-  csvName,
-  crdName,
-  cluster,
-  namespace,
-}: IOperatorInstanceFormProps) {
+export default function DeploymentFormBody() {
   const dispatch: ThunkDispatch<IStoreState, null, Action> = useDispatch();
   const [defaultValues, setDefaultValues] = useState("");
   const [crd, setCRD] = useState(undefined as IClusterServiceVersionCRD | undefined);
   const [icon, setIcon] = useState(placeholder);
-
-  useEffect(() => {
-    // Clean up component state
-    setDefaultValues("");
-    setCRD(undefined);
-    setIcon(placeholder);
-    dispatch(actions.operators.getCSV(cluster, namespace, csvName));
-  }, [cluster, dispatch, namespace, csvName]);
 
   const {
     operators: {
@@ -96,19 +75,36 @@ export default function DeploymentFormBody({
         resource: { create: createError },
       },
     },
+    clusters: { currentCluster: cluster, clusters },
   } = useSelector((state: IStoreState) => state);
+  const namespace = clusters[cluster].currentNamespace;
+  const push = usePush();
+
+  type IDeploymentFormBodyParams = {
+    csv: string;
+    crd: string;
+  };
+  const { csv: csvName, crd: crdName } = useParams<IDeploymentFormBodyParams>();
+
+  useEffect(() => {
+    // Clean up component state
+    setDefaultValues("");
+    setCRD(undefined);
+    setIcon(placeholder);
+    dispatch(actions.operators.getCSV(cluster, namespace, csvName || ""));
+  }, [cluster, dispatch, namespace, csvName]);
 
   useEffect(() => {
     if (csv) {
-      parseCSV(csv, crdName, setIcon, setCRD, setDefaultValues);
+      parseCSV(csv, crdName || "", setIcon, setCRD, setDefaultValues);
     }
   }, [csv, crdName]);
 
   if (!fetchError && !isFetching && !crd) {
     return (
-      <Alert theme="danger">
-        {crdName} not found in the definition of {csvName}
-      </Alert>
+      <AlertGroup status="danger">
+        The CRD "{crdName}" was not found in the definition of "{csvName}".
+      </AlertGroup>
     );
   }
 
@@ -128,15 +124,13 @@ export default function DeploymentFormBody({
       ),
     );
     if (created) {
-      dispatch(
-        push(
-          url.app.operatorInstances.view(
-            cluster,
-            namespace,
-            csv.metadata.name,
-            crd.name,
-            resource.metadata.name,
-          ),
+      push(
+        url.app.operatorInstances.view(
+          cluster,
+          namespace,
+          csv.metadata.name,
+          crd.name,
+          resource.metadata.name,
         ),
       );
     }
@@ -144,9 +138,9 @@ export default function DeploymentFormBody({
 
   if (fetchError) {
     return (
-      <Alert theme="danger">
-        An error occurred while fetching the ClusterServiceVersion: {fetchError.message}
-      </Alert>
+      <AlertGroup status="danger">
+        An error occurred while fetching the ClusterServiceVersion: {fetchError.message}.
+      </AlertGroup>
     );
   }
   return (
@@ -154,9 +148,9 @@ export default function DeploymentFormBody({
       <OperatorHeader title={`Create ${crd?.kind}`} icon={icon} />
       <section>
         {createError && (
-          <Alert theme="danger">
-            An error occurred while creating the instance: {createError.message}
-          </Alert>
+          <AlertGroup status="danger">
+            An error occurred while creating the instance: {createError.message}.
+          </AlertGroup>
         )}
         <Row>
           <Column span={3}>

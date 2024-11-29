@@ -1,40 +1,33 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsControlMessage, CdsFormGroup } from "@cds/react/forms";
 import { CdsInput } from "@cds/react/input";
 import { CdsSelect } from "@cds/react/select";
 import actions from "actions";
+import { handleErrorAction } from "actions/auth";
+import AlertGroup from "components/AlertGroup";
 import AvailablePackageDetailExcerpt from "components/Catalog/AvailablePackageDetailExcerpt";
-import Alert from "components/js/Alert";
-import Column from "components/js/Column";
-import Row from "components/js/Row";
+import Column from "components/Column";
+import LoadingWrapper from "components/LoadingWrapper";
 import PackageHeader from "components/PackageHeader/PackageHeader";
-import { push } from "connected-react-router";
+import Row from "components/Row";
 import {
   AvailablePackageReference,
   ReconciliationOptions,
-} from "gen/kubeappsapis/core/packages/v1alpha1/packages";
-import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins";
-import { useEffect, useState } from "react";
+} from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
+import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins_pb";
+import { usePush } from "hooks/push";
+import React, { useEffect, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import * as ReactRouter from "react-router-dom";
-import "react-tabs/style/react-tabs.css";
 import { Action } from "redux";
 import { ThunkDispatch } from "redux-thunk";
 import { Kube } from "shared/Kube";
 import { FetchError, IStoreState } from "shared/types";
 import * as url from "shared/url";
-import { getPluginsRequiringSA } from "shared/utils";
-import DeploymentFormBody from "../DeploymentFormBody/DeploymentFormBody";
-import LoadingWrapper from "../LoadingWrapper/LoadingWrapper";
-interface IRouteParams {
-  cluster: string;
-  namespace: string;
-  pluginName: string;
-  pluginVersion: string;
-  packageCluster: string;
-  packageNamespace: string;
-  packageId: string;
-  packageVersion?: string;
-}
+import { getPluginsAllowingSA, getPluginsRequiringSA, k8sObjectNameRegex } from "shared/utils";
+import DeploymentFormBody from "./DeploymentFormBody";
 
 export default function DeploymentForm() {
   const dispatch: ThunkDispatch<IStoreState, null, Action> = useDispatch();
@@ -47,7 +40,7 @@ export default function DeploymentForm() {
     packageCluster,
     packageNamespace,
     packageVersion,
-  } = ReactRouter.useParams() as IRouteParams;
+  } = ReactRouter.useParams();
   const {
     packages: { isFetching: packagesIsFetching, selected: selectedPackage },
     apps,
@@ -59,16 +52,23 @@ export default function DeploymentForm() {
   const [valuesModified, setValuesModified] = useState(false);
   const [serviceAccountList, setServiceAccountList] = useState([] as string[]);
   const [reconciliationOptions, setReconciliationOptions] = useState({} as ReconciliationOptions);
+  const formRef = useRef<HTMLFormElement>(null);
 
   const error = apps.error || selectedPackage.error;
+
+  const additionalDefaultValuesNames = Object.keys(
+    selectedPackage.availablePackageDetail?.additionalDefaultValues || {},
+  );
 
   const [pluginObj] = useState({ name: pluginName, version: pluginVersion } as Plugin);
 
   const onChangeSA = (e: React.FormEvent<HTMLSelectElement>) => {
-    setReconciliationOptions({
-      ...reconciliationOptions,
-      serviceAccountName: e.currentTarget.value,
-    });
+    setReconciliationOptions(
+      new ReconciliationOptions({
+        ...reconciliationOptions,
+        serviceAccountName: e.currentTarget.value,
+      }),
+    );
   };
 
   const [packageReference] = useState({
@@ -83,20 +83,25 @@ export default function DeploymentForm() {
   useEffect(() => {
     // Get the package details
     dispatch(
-      actions.packages.fetchAndSelectAvailablePackageDetail(packageReference, packageVersion),
+      actions.availablepackages.fetchAndSelectAvailablePackageDetail(
+        packageReference,
+        packageVersion,
+      ),
     );
     // Populate the rest of packages versions
-    dispatch(actions.packages.fetchAvailablePackageVersions(packageReference));
+    dispatch(actions.availablepackages.fetchAvailablePackageVersions(packageReference));
     return () => {};
   }, [dispatch, packageReference, packageVersion]);
 
   useEffect(() => {
     // Populate the service account list if the plugin requires it
-    if (getPluginsRequiringSA().includes(pluginObj.name)) {
+    if (getPluginsAllowingSA().includes(pluginObj.name)) {
       // We assume the user has enough permissions to do that. Fallback to a simple input maybe?
-      Kube.getServiceAccountNames(targetCluster, targetNamespace).then(saList =>
-        setServiceAccountList(saList.serviceaccountNames),
-      );
+      Kube.getServiceAccountNames(targetCluster || "", targetNamespace || "")
+        .then(saList => setServiceAccountList(saList.serviceaccountNames))
+        ?.catch(e => {
+          dispatch(handleErrorAction(e));
+        });
     }
     return () => {};
   }, [dispatch, targetCluster, targetNamespace, pluginObj.name]);
@@ -120,15 +125,16 @@ export default function DeploymentForm() {
     setReleaseName(e.target.value);
   };
 
+  const push = usePush();
   const handleDeploy = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setDeploying(true);
     if (selectedPackage.availablePackageDetail) {
       const deployed = await dispatch(
         // Installation always happen in the cluster/namespace passed in the URL
-        actions.apps.installPackage(
-          targetCluster,
-          targetNamespace,
+        actions.installedpackages.installPackage(
+          targetCluster || "",
+          targetNamespace || "",
           selectedPackage.availablePackageDetail,
           releaseName,
           appValues,
@@ -138,35 +144,42 @@ export default function DeploymentForm() {
       );
       setDeploying(false);
       if (deployed) {
-        dispatch(
-          push(
-            // Redirect to the installed package, note that the cluster/ns are the ones passed
-            // in the URL, not the ones from the package.
-            url.app.apps.get({
-              context: { cluster: targetCluster, namespace: targetNamespace },
-              plugin: pluginObj,
-              identifier: releaseName,
-            } as AvailablePackageReference),
-          ),
+        push(
+          // Redirect to the installed package, note that the cluster/ns are the ones passed
+          // in the URL, not the ones from the package.
+          url.app.apps.get({
+            context: { cluster: targetCluster, namespace: targetNamespace },
+            plugin: pluginObj,
+            identifier: releaseName,
+          } as AvailablePackageReference),
         );
       }
     }
   };
 
   const selectVersion = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    dispatch(
-      push(
-        url.app.apps.new(targetCluster, targetNamespace, packageReference, e.currentTarget.value),
+    push(
+      url.app.apps.new(
+        targetCluster || "",
+        targetNamespace || "",
+        packageReference,
+        e.currentTarget.value,
       ),
+    );
+  };
+
+  const onChangeAdditionalDefaultValues = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    dispatch(
+      actions.availablepackages.setAvailablePackageDetailCustomDefaults(e.currentTarget.value),
     );
   };
 
   if (error?.constructor === FetchError) {
     return (
       error && (
-        <Alert theme="danger">
-          Unable to retrieve the current app: {(error as FetchError).message}
-        </Alert>
+        <AlertGroup status="danger">
+          Unable to retrieve the package: {(error as FetchError)?.message}.
+        </AlertGroup>
       )
     );
   }
@@ -175,7 +188,7 @@ export default function DeploymentForm() {
     return (
       <LoadingWrapper
         className="margin-t-xxl"
-        loadingText={`Fetching ${decodeURIComponent(packageId)}...`}
+        loadingText={`Fetching ${decodeURIComponent(packageId || "")}...`}
       />
     );
   }
@@ -199,8 +212,8 @@ export default function DeploymentForm() {
             <AvailablePackageDetailExcerpt pkg={selectedPackage.availablePackageDetail} />
           </Column>
           <Column span={9}>
-            {error && <Alert theme="danger">An error occurred: {error.message}</Alert>}
-            <form onSubmit={handleDeploy}>
+            {error && <AlertGroup status="danger">An error occurred: {error.message}.</AlertGroup>}
+            <form onSubmit={handleDeploy} ref={formRef}>
               <CdsFormGroup
                 validate={true}
                 className="deployment-form"
@@ -211,7 +224,7 @@ export default function DeploymentForm() {
                   <label>Name</label>
                   <input
                     id="releaseName"
-                    pattern="[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*"
+                    pattern={k8sObjectNameRegex}
                     title="Use lowercase alphanumeric characters, '-' or '.'"
                     onChange={handleReleaseNameChange}
                     value={releaseName}
@@ -223,14 +236,14 @@ export default function DeploymentForm() {
                 </CdsInput>
                 {
                   // TODO(agamez): let plugins define their own components instead of hardcoding the logic here
-                  getPluginsRequiringSA().includes(pluginObj.name) ? (
+                  getPluginsAllowingSA().includes(pluginObj.name) ? (
                     <>
                       <CdsSelect layout="horizontal" id="serviceaccount-selector">
                         <label>Service Account</label>
                         <select
                           value={reconciliationOptions.serviceAccountName}
                           onChange={onChangeSA}
-                          required={true}
+                          required={getPluginsRequiringSA().includes(pluginObj.name)}
                         >
                           <option key=""></option>
                           {serviceAccountList?.map(o => (
@@ -248,16 +261,38 @@ export default function DeploymentForm() {
                     <></>
                   )
                 }
+                {additionalDefaultValuesNames.length >= 2 ? (
+                  <>
+                    <CdsSelect layout="horizontal" id="defaultValues-selector">
+                      <label>Default values to use</label>
+                      <select onChange={onChangeAdditionalDefaultValues}>
+                        <option key="">Package's values.yaml</option>
+                        {additionalDefaultValuesNames.map(o => (
+                          <option key={o} value={o}>
+                            {o}
+                          </option>
+                        ))}
+                      </select>
+                      <CdsControlMessage error="valueMissing">
+                        This package has multiple default value files to choose from. Select the
+                        defaults that you would like to use.
+                      </CdsControlMessage>
+                    </CdsSelect>
+                  </>
+                ) : (
+                  <></>
+                )}
               </CdsFormGroup>
               <DeploymentFormBody
                 deploymentEvent="install"
-                packageId={packageId}
+                packageId={packageId || ""}
                 packageVersion={packageVersion!}
                 packagesIsFetching={packagesIsFetching}
                 selected={selectedPackage}
                 setValues={handleValuesChange}
                 appValues={appValues}
                 setValuesModified={setValuesModifiedTrue}
+                formRef={formRef}
               />
             </form>
           </Column>

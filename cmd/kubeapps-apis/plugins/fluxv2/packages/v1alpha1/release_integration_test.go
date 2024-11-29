@@ -1,33 +1,34 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2024 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (
 	"context"
-	"fmt"
+	"math"
+	"math/rand"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	helmv2beta2 "github.com/fluxcd/helm-controller/api/v2beta2"
+	sourcev1beta2 "github.com/fluxcd/source-controller/api/v1beta2"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	corev1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	plugins "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
-	fluxplugin "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/plugins/fluxv2/packages/v1alpha1"
-	"golang.org/x/sync/semaphore"
+	corev1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
+	plugins "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
+	fluxplugin "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/plugins/fluxv2/packages/v1alpha1"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/fluxv2/packages/v1alpha1/common"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"k8s.io/apimachinery/pkg/util/sets"
+	apiv1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/types"
+)
+
+const (
+	fluxHelmReleases = "helmreleases"
 )
 
 // This is an integration test: it tests the full integration of flux plugin with flux back-end
@@ -36,290 +37,653 @@ import (
 // 1) kind cluster with flux deployed
 // 2) kubeapps apis apiserver service running with fluxv2 plug-in enabled, port forwarded to 8080, e.g.
 //      kubectl -n kubeapps port-forward svc/kubeapps-internal-kubeappsapis 8080:8080
-// 3) run './kind-cluster-setup.sh deploy' once prior to these tests
+// 3) run './integ-test-env.sh deploy' once prior to these tests
 
-const (
-	// This is local copy of the first few entries
-	// on "https://stefanprodan.github.io/podinfo/index.yaml" as of Sept 10 2021 with the chart
-	// urls modified to link to .tgz files also within the local cluster.
-	// If we want other repos, we'll have add directories and tinker with ./Dockerfile and NGINX conf.
-	// This relies on fluxv2plugin-testdata-svc service stood up by testdata/kind-cluster-setup.sh
-	podinfo_repo_url = "http://fluxv2plugin-testdata-svc.default.svc.cluster.local:80/podinfo"
-
-	// same as above but requires HTTP basic authentication: user: foo, password: bar
-	podinfo_basic_auth_repo_url = "http://fluxv2plugin-testdata-svc.default.svc.cluster.local:80/podinfo-basic-auth"
-)
-
-type integrationTestCreateSpec struct {
+type integrationTestCreatePackageSpec struct {
 	testName          string
+	repoType          string
 	repoUrl           string
+	repoInterval      time.Duration // 0 for default (10m)
+	repoSecret        *apiv1.Secret
 	request           *corev1.CreateInstalledPackageRequest
 	expectedDetail    *corev1.InstalledPackageDetail
 	expectedPodPrefix string
 	// what follows are boolean flags to test various negative scenarios
 	// different from expectedStatusCode due to async nature of install
 	expectInstallFailure bool
-	noPreCreateNs        bool
+	dontCreateNs         bool
 	noCleanup            bool
+	dontCreateReleaseSA  bool
 	expectedStatusCode   codes.Code
+	expectedResourceRefs []*corev1.ResourceRef
 }
 
 func TestKindClusterCreateInstalledPackage(t *testing.T) {
-	fluxPluginClient := checkEnv(t)
+	fluxPluginPackagesClient, fluxPluginReposClient, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	testCases := []integrationTestCreateSpec{
+	ghUser := os.Getenv("GITHUB_USER")
+	ghToken := os.Getenv("GITHUB_TOKEN")
+	if ghUser == "" || ghToken == "" {
+		t.Fatalf("Environment variables GITHUB_USER and GITHUB_TOKEN need to be set to run this test")
+	}
+
+	gcpUser := "oauth2accesstoken"
+	gcpPasswd, err := gcloudPrintAccessToken(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testCases := []integrationTestCreatePackageSpec{
 		{
-			testName:           "create test (simplest case)",
-			repoUrl:            podinfo_repo_url,
-			request:            create_request_basic,
-			expectedDetail:     expected_detail_basic,
-			expectedPodPrefix:  "@TARGET_NS@-my-podinfo-",
-			expectedStatusCode: codes.OK,
+			testName:             "create test (simplest case)",
+			repoUrl:              podinfo_repo_url,
+			request:              create_installed_package_request_basic,
+			expectedDetail:       expected_detail_installed_package_basic,
+			expectedPodPrefix:    "my-podinfo-",
+			expectedStatusCode:   codes.OK,
+			expectedResourceRefs: expected_resource_refs_basic,
 		},
 		{
-			testName:           "create package (semver constraint)",
-			repoUrl:            podinfo_repo_url,
-			request:            create_request_semver_constraint,
-			expectedDetail:     expected_detail_semver_constraint,
-			expectedPodPrefix:  "@TARGET_NS@-my-podinfo-2-",
-			expectedStatusCode: codes.OK,
+			testName:             "create package (semver constraint)",
+			repoUrl:              podinfo_repo_url,
+			request:              create_installed_package_request_semver_constraint,
+			expectedDetail:       expected_detail_installed_package_semver_constraint,
+			expectedPodPrefix:    "my-podinfo-2-",
+			expectedStatusCode:   codes.OK,
+			expectedResourceRefs: expected_resource_refs_semver_constraint,
 		},
 		{
-			testName:           "create package (reconcile options)",
-			repoUrl:            podinfo_repo_url,
-			request:            create_request_reconcile_options,
-			expectedDetail:     expected_detail_reconcile_options,
-			expectedPodPrefix:  "@TARGET_NS@-my-podinfo-3-",
-			expectedStatusCode: codes.OK,
+			testName:             "create package (reconcile options)",
+			repoUrl:              podinfo_repo_url,
+			request:              create_installed_package_request_reconcile_options,
+			expectedDetail:       expected_detail_installed_package_reconcile_options,
+			expectedPodPrefix:    "my-podinfo-3-",
+			expectedStatusCode:   codes.OK,
+			expectedResourceRefs: expected_resource_refs_reconcile_options,
 		},
 		{
-			testName:           "create package (with values)",
-			repoUrl:            podinfo_repo_url,
-			request:            create_request_with_values,
-			expectedDetail:     expected_detail_with_values,
-			expectedPodPrefix:  "@TARGET_NS@-my-podinfo-4-",
-			expectedStatusCode: codes.OK,
+			testName:             "create package (with values)",
+			repoUrl:              podinfo_repo_url,
+			request:              create_installed_package_request_with_values,
+			expectedDetail:       expected_detail_installed_package_with_values,
+			expectedPodPrefix:    "my-podinfo-4-",
+			expectedStatusCode:   codes.OK,
+			expectedResourceRefs: expected_resource_refs_with_values,
 		},
 		{
 			testName:             "install fails",
 			repoUrl:              podinfo_repo_url,
-			request:              create_request_install_fails,
-			expectedDetail:       expected_detail_install_fails,
+			request:              create_installed_package_request_install_fails,
+			expectedDetail:       expected_detail_installed_package_install_fails,
 			expectInstallFailure: true,
 			expectedStatusCode:   codes.OK,
 		},
 		{
 			testName:           "unauthorized",
 			repoUrl:            podinfo_repo_url,
-			request:            create_request_basic,
+			request:            create_installed_package_request_basic,
 			expectedStatusCode: codes.Unauthenticated,
 		},
 		{
 			testName:           "wrong cluster",
 			repoUrl:            podinfo_repo_url,
-			request:            create_request_wrong_cluster,
+			request:            create_installed_package_request_wrong_cluster,
 			expectedStatusCode: codes.Unimplemented,
 		},
 		{
 			testName:           "target namespace does not exist",
 			repoUrl:            podinfo_repo_url,
-			request:            create_request_target_ns_doesnt_exist,
-			noPreCreateNs:      true,
-			expectedStatusCode: codes.Internal,
+			request:            create_installed_package_request_target_ns_doesnt_exist,
+			dontCreateNs:       true,
+			expectedStatusCode: codes.NotFound,
+		},
+		{
+			testName: "create OCI helm release from [" + github_gfichtenholt_podinfo_oci_registry_url + "]",
+			repoType: "oci",
+			repoUrl:  github_gfichtenholt_podinfo_oci_registry_url,
+			repoSecret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				ghUser,
+				ghToken,
+			),
+			request:              create_installed_package_request_oci,
+			expectedDetail:       expected_detail_installed_package_oci,
+			expectedPodPrefix:    "my-podinfo-17",
+			expectedStatusCode:   codes.OK,
+			expectedResourceRefs: expected_resource_refs_oci,
+		},
+		{
+			testName: "create OCI helm release from [" + gcp_stefanprodan_podinfo_oci_registry_url + "]",
+			repoType: "oci",
+			repoUrl:  gcp_stefanprodan_podinfo_oci_registry_url,
+			repoSecret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				gcpUser,
+				string(gcpPasswd),
+			),
+			request:              create_installed_package_request_oci_2,
+			expectedDetail:       expected_detail_installed_package_oci_2,
+			expectedPodPrefix:    "my-podinfo-19",
+			expectedStatusCode:   codes.OK,
+			expectedResourceRefs: expected_resource_refs_oci_2,
 		},
 	}
 
-	grpcContext := newGrpcAdminContext(t, "test-create-admin")
+	name := types.NamespacedName{
+		Name:      "test-create-admin" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcContext, err := newGrpcAdminContext(t, name)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range testCases {
 		t.Run(tc.testName, func(t *testing.T) {
-			createAndWaitForHelmRelease(t, tc, fluxPluginClient, grpcContext)
+			createAndWaitForHelmRelease(t, tc, fluxPluginPackagesClient, fluxPluginReposClient, grpcContext, rnd)
 		})
 	}
 }
 
-type integrationTestUpdateSpec struct {
-	integrationTestCreateSpec
-	request *corev1.UpdateInstalledPackageRequest
-	// this is expected AFTER the update call completes
-	expectedDetailAfterUpdate *corev1.InstalledPackageDetail
-	unauthorized              bool
-}
-
 func TestKindClusterUpdateInstalledPackage(t *testing.T) {
-	fluxPluginClient := checkEnv(t)
+	fluxPluginPackagesClient, fluxPluginReposClient, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	testCases := []integrationTestUpdateSpec{
+	ghUser := os.Getenv("GITHUB_USER")
+	ghToken := os.Getenv("GITHUB_TOKEN")
+	if ghUser == "" || ghToken == "" {
+		t.Fatalf("Environment variables GITHUB_USER and GITHUB_TOKEN need to be set to run this test")
+	}
+
+	testCases := []struct {
+		integrationTestCreatePackageSpec
+		request *corev1.UpdateInstalledPackageRequest
+		// this is expected AFTER the update call completes
+		expectedDetailAfterUpdate *corev1.InstalledPackageDetail
+		expectedRefsAfterUpdate   []*corev1.ResourceRef
+		unauthorized              bool
+	}{
 		{
-			integrationTestCreateSpec: integrationTestCreateSpec{
-				testName:          "update test (simplest case)",
-				repoUrl:           podinfo_repo_url,
-				request:           create_request_podinfo_5_2_1,
-				expectedDetail:    expected_detail_podinfo_5_2_1,
-				expectedPodPrefix: "@TARGET_NS@-my-podinfo-6-",
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName:             "update test (simplest case)",
+				repoUrl:              podinfo_repo_url,
+				request:              create_installed_package_request_podinfo_5_2_1,
+				expectedDetail:       expected_detail_installed_package_podinfo_5_2_1,
+				expectedPodPrefix:    "my-podinfo-6-",
+				expectedResourceRefs: expected_resource_refs_podinfo_5_2_1,
 			},
 			request:                   update_request_1,
-			expectedDetailAfterUpdate: expected_detail_podinfo_6_0_0,
+			expectedDetailAfterUpdate: expected_detail_installed_package_podinfo_6_0_0,
+			expectedRefsAfterUpdate:   expected_resource_refs_podinfo_5_2_1,
 		},
 		{
-			integrationTestCreateSpec: integrationTestCreateSpec{
-				testName:          "update test (add values)",
-				repoUrl:           podinfo_repo_url,
-				request:           create_request_podinfo_5_2_1_no_values,
-				expectedDetail:    expected_detail_podinfo_5_2_1_no_values,
-				expectedPodPrefix: "@TARGET_NS@-my-podinfo-7-",
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName:             "update test (add values)",
+				repoUrl:              podinfo_repo_url,
+				request:              create_installed_package_request_podinfo_5_2_1_no_values,
+				expectedDetail:       expected_detail_installed_package_podinfo_5_2_1_no_values,
+				expectedPodPrefix:    "my-podinfo-7-",
+				expectedResourceRefs: expected_resource_refs_podinfo_5_2_1_no_values,
 			},
 			request:                   update_request_2,
-			expectedDetailAfterUpdate: expected_detail_podinfo_5_2_1_values,
+			expectedDetailAfterUpdate: expected_detail_installed_package_podinfo_5_2_1_values,
+			expectedRefsAfterUpdate:   expected_resource_refs_podinfo_5_2_1_no_values,
 		},
 		{
-			integrationTestCreateSpec: integrationTestCreateSpec{
-				testName:          "update test (change values)",
-				repoUrl:           podinfo_repo_url,
-				request:           create_request_podinfo_5_2_1_values_2,
-				expectedDetail:    expected_detail_podinfo_5_2_1_values_2,
-				expectedPodPrefix: "@TARGET_NS@-my-podinfo-8-",
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName:             "update test (change values)",
+				repoUrl:              podinfo_repo_url,
+				request:              create_installed_package_request_podinfo_5_2_1_values_2,
+				expectedDetail:       expected_detail_installed_package_podinfo_5_2_1_values_2,
+				expectedPodPrefix:    "my-podinfo-8-",
+				expectedResourceRefs: expected_resource_refs_podinfo_5_2_1_values_2,
 			},
 			request:                   update_request_3,
-			expectedDetailAfterUpdate: expected_detail_podinfo_5_2_1_values_3,
+			expectedDetailAfterUpdate: expected_detail_installed_package_podinfo_5_2_1_values_3,
+			expectedRefsAfterUpdate:   expected_resource_refs_podinfo_5_2_1_values_2,
 		},
 		{
-			integrationTestCreateSpec: integrationTestCreateSpec{
-				testName:          "update test (remove values)",
-				repoUrl:           podinfo_repo_url,
-				request:           create_request_podinfo_5_2_1_values_4,
-				expectedDetail:    expected_detail_podinfo_5_2_1_values_4,
-				expectedPodPrefix: "@TARGET_NS@-my-podinfo-9-",
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName:             "update test (remove values)",
+				repoUrl:              podinfo_repo_url,
+				request:              create_installed_package_request_podinfo_5_2_1_values_4,
+				expectedDetail:       expected_detail_installed_package_podinfo_5_2_1_values_4,
+				expectedPodPrefix:    "my-podinfo-9-",
+				expectedResourceRefs: expected_resource_refs_podinfo_5_2_1_values_4,
 			},
 			request:                   update_request_4,
-			expectedDetailAfterUpdate: expected_detail_podinfo_5_2_1_values_5,
+			expectedDetailAfterUpdate: expected_detail_installed_package_podinfo_5_2_1_values_5,
+			expectedRefsAfterUpdate:   expected_resource_refs_podinfo_5_2_1_values_4,
 		},
 		{
-			integrationTestCreateSpec: integrationTestCreateSpec{
-				testName:          "update test (values dont change)",
-				repoUrl:           podinfo_repo_url,
-				request:           create_request_podinfo_5_2_1_values_6,
-				expectedDetail:    expected_detail_podinfo_5_2_1_values_6,
-				expectedPodPrefix: "@TARGET_NS@-my-podinfo-10-",
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName:             "update test (values dont change)",
+				repoUrl:              podinfo_repo_url,
+				request:              create_installed_package_request_podinfo_5_2_1_values_6,
+				expectedDetail:       expected_detail_installed_package_podinfo_5_2_1_values_6,
+				expectedPodPrefix:    "my-podinfo-10-",
+				expectedResourceRefs: expected_resource_refs_podinfo_5_2_1_values_6,
 			},
 			request:                   update_request_5,
-			expectedDetailAfterUpdate: expected_detail_podinfo_5_2_1_values_6,
+			expectedDetailAfterUpdate: expected_detail_installed_package_podinfo_5_2_1_values_6,
+			expectedRefsAfterUpdate:   expected_resource_refs_podinfo_5_2_1_values_6,
 		},
 		{
-			integrationTestCreateSpec: integrationTestCreateSpec{
-				testName:          "update unauthorized test",
-				repoUrl:           podinfo_repo_url,
-				request:           create_request_podinfo_7,
-				expectedDetail:    expected_detail_podinfo_7,
-				expectedPodPrefix: "@TARGET_NS@-my-podinfo-11-",
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName:             "update unauthorized test",
+				repoUrl:              podinfo_repo_url,
+				request:              create_installed_package_request_podinfo_7,
+				expectedDetail:       expected_detail_installed_package_podinfo_7,
+				expectedPodPrefix:    "my-podinfo-11-",
+				expectedResourceRefs: expected_resource_refs_podinfo_7,
 			},
 			request:      update_request_6,
 			unauthorized: true,
 		},
-		// TODO (gfichtenholt) test automatic upgrade to new version when it becomes available
+		{
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName:             "update installed package in failed state is allowed",
+				repoUrl:              podinfo_repo_url,
+				request:              create_installed_package_request_podinfo_8,
+				expectedDetail:       expected_detail_installed_package_podinfo_8,
+				expectInstallFailure: true,
+			},
+			request:                   update_request_7,
+			expectedDetailAfterUpdate: expected_detail_installed_package_podinfo_9,
+			expectedRefsAfterUpdate:   expected_resource_refs_podinfo_9,
+		},
+		{
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName: "update OCI helm release from [" + github_gfichtenholt_podinfo_oci_registry_url + "]",
+				repoType: "oci",
+				repoUrl:  github_gfichtenholt_podinfo_oci_registry_url,
+				repoSecret: newBasicAuthSecret(types.NamespacedName{
+					Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+					Namespace: "default"},
+					ghUser,
+					ghToken,
+				),
+				request:              create_installed_package_request_for_update_oci,
+				expectedDetail:       expected_detail_installed_package_for_update_oci,
+				expectedPodPrefix:    "my-podinfo-21",
+				expectedStatusCode:   codes.OK,
+				expectedResourceRefs: expected_resource_refs_for_update_oci,
+			},
+			request:                   update_request_8,
+			expectedDetailAfterUpdate: expected_detail_installed_package_podinfo_6_1_5_for_update,
+			expectedRefsAfterUpdate:   expected_resource_refs_for_update_oci,
+		},
 	}
 
-	grpcContext := newGrpcAdminContext(t, "test-create-admin")
+	name := types.NamespacedName{
+		Name:      "test-update-admin-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcContext, err := newGrpcAdminContext(t, name)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range testCases {
 		t.Run(tc.testName, func(t *testing.T) {
-
 			installedRef := createAndWaitForHelmRelease(
-				t, tc.integrationTestCreateSpec, fluxPluginClient, grpcContext)
+				t, tc.integrationTestCreatePackageSpec, fluxPluginPackagesClient, fluxPluginReposClient, grpcContext, rnd)
 			tc.request.InstalledPackageRef = installedRef
 
 			ctx := grpcContext
 			if tc.unauthorized {
 				ctx = context.TODO()
 			}
-			_, err := fluxPluginClient.UpdateInstalledPackage(ctx, tc.request)
-			if tc.unauthorized {
-				if status.Code(err) != codes.Unauthenticated {
-					t.Fatalf("Expected Unathenticated, got: %v", status.Code(err))
+
+			// Every once in a while (very infrequently, like 1 out of 25 tries)
+			// I get rpc error: code = Internal desc = unable to update the HelmRelease
+			// 'test-12-i7a4/my-podinfo-12' due to 'Operation cannot be fulfilled on
+			// helmreleases.helm.toolkit.fluxcd.io "my-podinfo-12": the object has been
+			// modified; please apply your changes to the latest version and try again'
+			// ... so this is the reason for the loop loop with retries
+			var i, maxRetries = 0, 5
+			for ; i < maxRetries; i++ {
+				_, err := fluxPluginPackagesClient.UpdateInstalledPackage(ctx, tc.request)
+				if tc.unauthorized {
+					if status.Code(err) != codes.Unauthenticated {
+						t.Fatalf("Expected Unauthenticated, got: %v", status.Code(err))
+					}
+					return // done, nothing more to check
+				} else if err != nil {
+					if strings.Contains(err.Error(), " the object has been modified; please apply your changes to the latest version and try again") {
+						waitTime := int64(math.Pow(2, float64(i)))
+						t.Logf("Retrying update in [%d] sec due to %s...", waitTime, err.Error())
+						SleepWithCountdown(t, int(waitTime))
+					} else {
+						t.Fatal(err)
+					}
+				} else {
+					break
 				}
-				return // done, nothing more to check
-			} else if err != nil {
-				t.Fatalf("%+v", err)
+			}
+			if i == maxRetries {
+				t.Fatalf("Update retries exhausted for package [%s], last error: [%v]", installedRef, err)
 			}
 
-			actualRespAfterUpdate := waitUntilInstallCompletes(t, fluxPluginClient, grpcContext, installedRef, false)
+			actualRespAfterUpdate, actualRefsAfterUpdate :=
+				waitUntilInstallCompletes(t, fluxPluginPackagesClient, grpcContext, installedRef, false)
 
 			tc.expectedDetailAfterUpdate.InstalledPackageRef = installedRef
-			tc.expectedDetailAfterUpdate.Name = tc.integrationTestCreateSpec.request.Name
+			tc.expectedDetailAfterUpdate.Name = tc.integrationTestCreatePackageSpec.request.Name
 			tc.expectedDetailAfterUpdate.ReconciliationOptions = &corev1.ReconciliationOptions{
-				Interval: 60,
+				Interval: "1m",
 			}
-			tc.expectedDetailAfterUpdate.AvailablePackageRef = tc.integrationTestCreateSpec.request.AvailablePackageRef
+			tc.expectedDetailAfterUpdate.AvailablePackageRef = tc.integrationTestCreatePackageSpec.request.AvailablePackageRef
 			tc.expectedDetailAfterUpdate.PostInstallationNotes = strings.ReplaceAll(
 				tc.expectedDetailAfterUpdate.PostInstallationNotes,
 				"@TARGET_NS@",
-				tc.integrationTestCreateSpec.request.TargetContext.Namespace)
+				tc.integrationTestCreatePackageSpec.request.TargetContext.Namespace)
 
 			expectedResp := &corev1.GetInstalledPackageDetailResponse{
 				InstalledPackageDetail: tc.expectedDetailAfterUpdate,
 			}
 
-			compareActualVsExpectedGetInstalledPackageDetailResponse(t, actualRespAfterUpdate, expectedResp)
+			compareInstalledPackageDetail(t, actualRespAfterUpdate, expectedResp)
+
+			if tc.expectedRefsAfterUpdate != nil {
+				expectedRefsCopy := []*corev1.ResourceRef{}
+				for _, r := range tc.expectedRefsAfterUpdate {
+					newR := &corev1.ResourceRef{
+						ApiVersion: r.ApiVersion,
+						Kind:       r.Kind,
+						Name:       strings.ReplaceAll(r.Name, "@TARGET_NS@", tc.integrationTestCreatePackageSpec.request.TargetContext.Namespace),
+						Namespace:  tc.integrationTestCreatePackageSpec.request.TargetContext.Namespace,
+					}
+					expectedRefsCopy = append(expectedRefsCopy, newR)
+				}
+				opts := cmpopts.IgnoreUnexported(corev1.ResourceRef{})
+				if got, want := actualRefsAfterUpdate.ResourceRefs, expectedRefsCopy; !cmp.Equal(want, got, opts) {
+					t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+				}
+			}
 		})
 	}
 }
 
-type integrationTestDeleteSpec struct {
-	integrationTestCreateSpec
-	unauthorized bool
+// The goal of this integration test is to ensure that when the contents of remote HTTP helm repo is changed,
+// that fact is recorded locally and processed properly (repo/chart cache is updated with latest, etc.)
+func TestKindClusterAutoUpdateInstalledPackageFromHttpRepo(t *testing.T) {
+	fluxPluginPackagesClient, fluxPluginReposClient, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	spec := integrationTestCreatePackageSpec{
+		testName:             "create test (HTTP repo auto update)",
+		repoUrl:              podinfo_repo_url,
+		repoInterval:         30 * time.Second,
+		request:              create_installed_package_request_auto_update,
+		expectedDetail:       expected_detail_installed_package_auto_update,
+		expectedPodPrefix:    "my-podinfo-16",
+		expectedStatusCode:   codes.OK,
+		expectedResourceRefs: expected_resource_refs_auto_update,
+	}
+
+	name := types.NamespacedName{
+		Name:      "test-auto-update-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcContext, err := newGrpcAdminContext(t, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// this will also make sure that response looks like expected_detail_installed_package_auto_update
+	installedRef := createAndWaitForHelmRelease(t, spec, fluxPluginPackagesClient, fluxPluginReposClient, grpcContext, rnd)
+	podName, err := getFluxPluginTestdataPodName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("podName = [%s]", podName)
+
+	if err = kubeCopyFileToPod(
+		t,
+		testTgz("podinfo-6.0.3.tgz"),
+		*podName,
+		"/usr/share/nginx/html/podinfo/podinfo-6.0.3.tgz"); err != nil {
+		t.Fatal(err)
+	}
+	if err = kubeCopyFileToPod(
+		t,
+		testYaml("podinfo-index-updated.yaml"),
+		*podName,
+		"/usr/share/nginx/html/podinfo/index.yaml"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		if err = kubeCopyFileToPod(
+			t,
+			testYaml("podinfo-index.yaml"),
+			*podName,
+			"/usr/share/nginx/html/podinfo/index.yaml"); err != nil {
+			t.Logf("Error reverting to previous podinfo index: %v", err)
+		}
+	})
+	SleepWithCountdown(t, 45)
+
+	resp, err := fluxPluginPackagesClient.GetInstalledPackageDetail(
+		grpcContext, &corev1.GetInstalledPackageDetailRequest{
+			InstalledPackageRef: installedRef,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected_detail_installed_package_auto_update_2.InstalledPackageRef = installedRef
+	expected_detail_installed_package_auto_update_2.PostInstallationNotes = strings.ReplaceAll(
+		expected_detail_installed_package_auto_update_2.PostInstallationNotes,
+		"@TARGET_NS@",
+		spec.request.TargetContext.Namespace)
+	compareInstalledPackageDetail(
+		t, resp, &corev1.GetInstalledPackageDetailResponse{
+			InstalledPackageDetail: expected_detail_installed_package_auto_update_2,
+		})
+}
+
+// The goal of this integration test is to ensure that when the contents of remote OCI helm repo is changed,
+// that fact is recorded locally and processed properly (repo/chart cache is updated with latest, etc.)
+func TestKindClusterAutoUpdateInstalledPackageFromOciRepo(t *testing.T) {
+	fluxPluginPackagesClient, fluxPluginReposClient, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// see TestKindClusterAvailablePackageEndpointsForOCI for explanation
+	ghUser := os.Getenv("GITHUB_USER")
+	ghToken := os.Getenv("GITHUB_TOKEN")
+	if ghUser == "" || ghToken == "" {
+		t.Fatalf("Environment variables GITHUB_USER and GITHUB_TOKEN need to be set to run this test")
+	}
+
+	spec := integrationTestCreatePackageSpec{
+		testName:     "create test (OCI repo auto update)",
+		repoUrl:      github_gfichtenholt_podinfo_oci_registry_url,
+		repoType:     "oci",
+		repoInterval: 30 * time.Second,
+		repoSecret: newBasicAuthSecret(types.NamespacedName{
+			Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+			Namespace: "default"},
+			ghUser,
+			ghToken,
+		),
+		request:              create_installed_package_request_auto_update_oci,
+		expectedDetail:       expected_detail_installed_package_auto_update_oci,
+		expectedPodPrefix:    "my-podinfo-18",
+		expectedStatusCode:   codes.OK,
+		expectedResourceRefs: expected_resource_refs_auto_update_oci,
+	}
+
+	name := types.NamespacedName{
+		Name:      "test-auto-update-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcContext, err := newGrpcAdminContext(t, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installedRef := createAndWaitForHelmRelease(t, spec, fluxPluginPackagesClient, fluxPluginReposClient, grpcContext, rnd)
+
+	podName, err := getFluxPluginTestdataPodName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("podName = [%s]", podName)
+
+	if err = helmPushChartToMyGithubRegistry(t, "6.1.6"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Delete remote chart version at the end of the test so there are no side-effects.
+		if err = deleteChartFromMyGithubRegistry(t, "6.1.6"); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	SleepWithCountdown(t, 45)
+
+	resp, err := fluxPluginPackagesClient.GetInstalledPackageDetail(
+		grpcContext, &corev1.GetInstalledPackageDetailRequest{
+			InstalledPackageRef: installedRef,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected_detail_installed_package_auto_update_oci_2.InstalledPackageRef = installedRef
+	expected_detail_installed_package_auto_update_oci_2.PostInstallationNotes = strings.ReplaceAll(
+		expected_detail_installed_package_auto_update_oci_2.PostInstallationNotes,
+		"@TARGET_NS@",
+		spec.request.TargetContext.Namespace)
+	compareInstalledPackageDetail(
+		t, resp, &corev1.GetInstalledPackageDetailResponse{
+			InstalledPackageDetail: expected_detail_installed_package_auto_update_oci_2,
+		})
 }
 
 func TestKindClusterDeleteInstalledPackage(t *testing.T) {
-	fluxPluginClient := checkEnv(t)
+	fluxPluginPackagesClient, fluxPluginReposClient, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	testCases := []integrationTestDeleteSpec{
+	ghUser := os.Getenv("GITHUB_USER")
+	ghToken := os.Getenv("GITHUB_TOKEN")
+	if ghUser == "" || ghToken == "" {
+		t.Fatalf("Environment variables GITHUB_USER and GITHUB_TOKEN need to be set to run this test")
+	}
+
+	testCases := []struct {
+		integrationTestCreatePackageSpec
+		unauthorized bool
+	}{
 		{
-			integrationTestCreateSpec: integrationTestCreateSpec{
-				testName:          "delete test (simplest case)",
-				repoUrl:           podinfo_repo_url,
-				request:           create_request_podinfo_for_delete_1,
-				expectedDetail:    expected_detail_podinfo_for_delete_1,
-				expectedPodPrefix: "@TARGET_NS@-my-podinfo-12-",
-				noCleanup:         true,
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName:             "delete test (simplest case)",
+				repoUrl:              podinfo_repo_url,
+				request:              create_installed_package_request_podinfo_for_delete_1,
+				expectedDetail:       expected_detail_installed_package_podinfo_for_delete_1,
+				expectedPodPrefix:    "my-podinfo-12-",
+				expectedResourceRefs: expected_resource_refs_for_delete_1,
+				noCleanup:            true,
 			},
 		},
 		{
-			integrationTestCreateSpec: integrationTestCreateSpec{
-				testName:          "delete test (unauthorized)",
-				repoUrl:           podinfo_repo_url,
-				request:           create_request_podinfo_for_delete_2,
-				expectedDetail:    expected_detail_podinfo_for_delete_2,
-				expectedPodPrefix: "@TARGET_NS@-my-podinfo-13-",
-				noCleanup:         true,
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName:             "delete test (unauthorized)",
+				repoUrl:              podinfo_repo_url,
+				request:              create_installed_package_request_podinfo_for_delete_2,
+				expectedDetail:       expected_detail_installed_package_podinfo_for_delete_2,
+				expectedPodPrefix:    "my-podinfo-13-",
+				expectedResourceRefs: expected_resource_refs_for_delete_2,
+				noCleanup:            true,
 			},
 			unauthorized: true,
 		},
+		{
+			integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+				testName: "delete OCI helm release",
+				repoType: "oci",
+				repoUrl:  github_gfichtenholt_podinfo_oci_registry_url,
+				repoSecret: newBasicAuthSecret(types.NamespacedName{
+					Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+					Namespace: "default"},
+					ghUser,
+					ghToken,
+				),
+				request:              create_installed_package_request_for_delete_oci,
+				expectedDetail:       expected_detail_installed_package_for_delete_oci,
+				expectedPodPrefix:    "my-podinfo-22-",
+				expectedStatusCode:   codes.OK,
+				expectedResourceRefs: expected_resource_refs_for_delete_oci,
+				noCleanup:            true,
+			},
+		},
+		// this is the scenario from https://github.com/vmware-tanzu/kubeapps/issues/5577
+		// currently fails due to https://github.com/fluxcd/helm-controller/issues/554
+		// TODO (gfichtenholt) uncomment this if/when issue is resolved by flux
+		/*
+			{
+				integrationTestCreatePackageSpec: integrationTestCreatePackageSpec{
+					testName:             "delete after install fails",
+					repoUrl:              podinfo_repo_url,
+					request:              create_installed_package_request_podinfo_for_delete_3,
+					expectedDetail:       expected_detail_installed_package_podinfo_for_delete_3,
+					expectInstallFailure: true,
+					noCleanup:            true,
+					dontCreateReleaseSA:  true,
+				},
+			},
+		*/
 	}
 
-	grpcContext := newGrpcAdminContext(t, "test-delete-admin")
+	name := types.NamespacedName{
+		Name:      "test-delete-admin" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcContext, err := newGrpcAdminContext(t, name)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range testCases {
 		t.Run(tc.testName, func(t *testing.T) {
-			installedRef := createAndWaitForHelmRelease(t, tc.integrationTestCreateSpec, fluxPluginClient, grpcContext)
+			installedRef := createAndWaitForHelmRelease(t, tc.integrationTestCreatePackageSpec, fluxPluginPackagesClient, fluxPluginReposClient, grpcContext, rnd)
 
 			ctx := grpcContext
 			if tc.unauthorized {
 				ctx = context.TODO()
 			}
-			_, err := fluxPluginClient.DeleteInstalledPackage(ctx, &corev1.DeleteInstalledPackageRequest{
+			_, err := fluxPluginPackagesClient.DeleteInstalledPackage(ctx, &corev1.DeleteInstalledPackageRequest{
 				InstalledPackageRef: installedRef,
 			})
 			if tc.unauthorized {
 				if status.Code(err) != codes.Unauthenticated {
-					t.Fatalf("Expected Unathenticated, got: %v", status.Code(err))
+					t.Fatalf("Expected Unauthenticated, got: %v", status.Code(err))
 				}
 				// still need to delete the release though
-				if err = kubeDeleteHelmRelease(t, installedRef.Identifier, installedRef.Context.Namespace); err != nil {
+				name := types.NamespacedName{
+					Name:      installedRef.Identifier,
+					Namespace: installedRef.Context.Namespace,
+				}
+				if err = kubeDeleteHelmRelease(t, name); err != nil {
 					t.Logf("Failed to delete helm release due to %v", err)
 				}
 				return // done, nothing more to check
 			} else if err != nil {
-				t.Fatalf("%+v", err)
+				t.Fatal(err)
 			}
 
 			const maxWait = 25
@@ -327,7 +691,7 @@ func TestKindClusterDeleteInstalledPackage(t *testing.T) {
 				grpcContext, cancel := context.WithTimeout(grpcContext, defaultContextTimeout)
 				defer cancel()
 
-				_, err := fluxPluginClient.GetInstalledPackageDetail(
+				_, err := fluxPluginPackagesClient.GetInstalledPackageDetail(
 					grpcContext, &corev1.GetInstalledPackageDetailRequest{
 						InstalledPackageRef: installedRef,
 					})
@@ -335,21 +699,25 @@ func TestKindClusterDeleteInstalledPackage(t *testing.T) {
 					if status.Code(err) == codes.NotFound {
 						break // this is the only way to break out of this loop successfully
 					} else {
-						t.Fatalf("%+v", err)
+						t.Fatal(err)
 					}
 				}
 				if i == maxWait {
-					t.Fatalf("Timed out waiting for delete of installed package [%s], last error: [%v]", installedRef, err)
+					t.Fatalf("Timed out waiting for deletion of installed package [%s], last error: [%v]", installedRef, err)
 				} else {
 					t.Logf("Waiting 1s for package [%s] to be deleted, attempt [%d/%d]...", installedRef, i+1, maxWait)
 					time.Sleep(1 * time.Second)
 				}
 			}
 
-			// confidence test
-			exists, err := kubeExistsHelmRelease(t, installedRef.Identifier, installedRef.Context.Namespace)
+			// sanity check
+			name := types.NamespacedName{
+				Name:      installedRef.Identifier,
+				Namespace: installedRef.Context.Namespace,
+			}
+			exists, err := kubeExistsHelmRelease(t, name)
 			if err != nil {
-				t.Fatalf("%+v", err)
+				t.Fatal(err)
 			} else if exists {
 				t.Fatalf("helmrelease [%s] still exists", installedRef)
 			}
@@ -358,403 +726,829 @@ func TestKindClusterDeleteInstalledPackage(t *testing.T) {
 			// in the targetNamespace, except the namespace itself. Wait to make sure this is done
 			// (https://fluxcd.io/docs/components/helm/) it clearly says: Prunes Helm releases removed
 			// from cluster (garbage collection)
-			expectedPodPrefix := strings.ReplaceAll(
-				tc.expectedPodPrefix, "@TARGET_NS@", tc.request.TargetContext.Namespace)
 			for i := 0; i <= maxWait; i++ {
 				if pods, err := kubeGetPodNames(t, tc.request.TargetContext.Namespace); err != nil {
-					t.Fatalf("%+v", err)
+					t.Fatal(err)
 				} else if len(pods) == 0 {
 					break
 				} else if len(pods) != 1 {
 					t.Errorf("expected 1 pod, got: %s", pods)
-				} else if !strings.HasPrefix(pods[0], expectedPodPrefix) {
+				} else if !strings.HasPrefix(pods[0], tc.expectedPodPrefix) {
 					t.Errorf("expected pod with prefix [%s] not found in namespace [%s], pods found: [%v]",
-						expectedPodPrefix, tc.request.TargetContext.Namespace, pods)
+						tc.expectedPodPrefix, tc.request.TargetContext.Namespace, pods)
 				} else if i == maxWait {
-					t.Fatalf("Timed out waiting for garbage collection, of [%s], last error: [%v]", pods[0], err)
+					t.Fatalf("Timed out waiting for garbage collection of pod [%s]", pods[0])
 				} else {
-					t.Logf("Waiting 2s for garbage collection of [%s], attempt [%d/%d]...", pods[0], i+1, maxWait)
-					time.Sleep(2 * time.Second)
+					t.Logf("Waiting 3s for garbage collection of pod [%s], attempt [%d/%d]...", pods[0], i+1, maxWait)
+					time.Sleep(3 * time.Second)
 				}
 			}
 		})
 	}
 }
 
-// this integration test is meant to test a scenario when the redis cache is confiured with maxmemory
-// too small to be able to fit all the repos needed to satisfy the request for GetAvailablePackageSummaries
-// and redis cache eviction kicks in. Also, the kubeapps-apis pod should have a large memory limit (1Gb) set
-// To set up such environment one can use  "-f ./docs/user/manifests/kubeapps-local-dev-redis-tiny-values.yaml"
-// option when installing kubeapps via "helm upgrade"
-// It is worth noting that exactly how many copies of bitnami repo can be held in the cache at any given time varies
-// This is because the size of the index.yaml we get from bitnami does fluctuate quite a bit over time:
-// [kubeapps]$ ls -l bitnami_index.yaml
-// -rw-r--r--@ 1 gfichtenholt  staff  8432962 Jun 20 02:35 bitnami_index.yaml
-// [kubeapps]$ ls -l bitnami_index.yaml
-// -rw-rw-rw-@ 1 gfichtenholt  staff  10394218 Nov  7 19:41 bitnami_index.yaml
-// Also now we are caching helmcharts themselves for each repo so that will affect how many will fit too
-func TestKindClusterGetAvailablePackageSummariesForLargeReposAndTinyRedis(t *testing.T) {
-	fluxPlugin := checkEnv(t)
-
-	redisCli, err := newRedisClientForIntegrationTest(t)
+// scenario:
+//  1. create new namespace ns1
+//  2. add podinfo repo in ns1
+//  3. create new namespace ns2
+//  4. create these service-accounts in default namespace:
+//     a) - "...-admin", with cluster-wide access to everything
+//     b) - "...-loser", without cluster-wide access or any access to any of the namespaces
+//     c) - "...-helmreleases", with only permissions to 'get' HelmReleases in ns2
+//     d) - "...-helmreleases-and-charts", with only permissions to 'get' HelmCharts in ns1, HelmReleases in ns2
+//  5. as user 4a) install package podinfo in ns2
+//  6. verify GetInstalledPackageSummaries:
+//     a) as 4a) returns 1 result
+//     b) as 4b) raises PermissionDenied error
+//     c) as 4c) returns 1 result but without the corresponding chart details
+//     d) as 4d) returns 1 result with details from corresponding chart
+//  7. verify GetInstalledPackageDetail:
+//     a) as 4a) returns full detail
+//     b) as 4b) returns PermissionDenied error
+//     c) as 4c) returns full detail
+//     d) as 4d) returns full detail
+//  8. verify GetInstalledPackageResourceRefs:
+//     a) as 4a) returns all refs
+//     b) as 4b) returns PermissionDenied error
+//     c) as 4c) returns all refs
+//
+// ref https://github.com/vmware-tanzu/kubeapps/issues/4390
+func TestKindClusterRBAC_ReadRelease(t *testing.T) {
+	fluxPluginPackagesClient, fluxPluginReposClient, rnd, err := checkEnv(t)
 	if err != nil {
-		t.Fatalf("%+v", err)
+		t.Fatal(err)
 	}
 
-	// assume 30Mb redis cache for now. See comment above
-	if err = redisCheckTinyMaxMemory(t, redisCli, "31457280"); err != nil {
-		t.Fatalf("%v", err)
+	ns1 := "test-ns1-" + randSeq(rnd, 4)
+	if err := kubeCreateNamespaceAndCleanup(t, ns1); err != nil {
+		t.Fatal(err)
 	}
 
-	// ref https://redis.io/topics/notifications
-	if err = redisCli.ConfigSet(redisCli.Context(), "notify-keyspace-events", "EA").Err(); err != nil {
-		t.Fatalf("%+v", err)
+	adminAcctName := types.NamespacedName{
+		Name:      "test-release-rbac-admin-" + randSeq(rnd, 4),
+		Namespace: "default",
 	}
-	t.Cleanup(func() {
-		t.Logf("Resetting notify-keyspace-events")
-		if err = redisCli.ConfigSet(redisCli.Context(), "notify-keyspace-events", "").Err(); err != nil {
-			t.Logf("%v", err)
-		}
-	})
-
-	if err = initNumberOfChartsInBitnamiCatalog(t); err != nil {
-		t.Errorf("Failed to get number of charts in bitnami catalog due to: %v", err)
+	grpcCtxAdmin, err := newGrpcAdminContext(t, adminAcctName)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	const MAX_REPOS_NEVER = 100
-	var totalRepos = 0
-	// ref https://stackoverflow.com/questions/32840687/timeout-for-waitgroup-wait
-	evictedRepos := sets.String{}
-
-	// do this part in a func so we can defer subscribe.Close
-	func() {
-		// ref https://medium.com/nerd-for-tech/redis-getting-notified-when-a-key-is-expired-or-changed-ca3e1f1c7f0a
-		subscribe := redisCli.PSubscribe(redisCli.Context(), "__keyevent@0__:*")
-		defer subscribe.Close()
-
-		sem := semaphore.NewWeighted(MAX_REPOS_NEVER)
-		if err := sem.Acquire(context.Background(), MAX_REPOS_NEVER); err != nil {
-			t.Fatalf("%v", err)
-		}
-
-		go redisReceiveNotificationsLoop(t, subscribe.Channel(), sem, &evictedRepos)
-
-		// now load some large repos (bitnami)
-		// I didn't want to store a large (>10MB) copy of bitnami repo in our git,
-		// so for now let it fetch directly from bitnami website
-		// we'll keep adding repos one at a time, until we get an event from redis
-		// about the first evicted repo entry
-		for ; totalRepos < MAX_REPOS_NEVER && evictedRepos.Len() == 0; totalRepos++ {
-			repo := fmt.Sprintf("bitnami-%d", totalRepos)
-			// this is to make sure we allow enough time for repository to be created and come to ready state
-			if err = kubeCreateHelmRepository(t, repo, "https://charts.bitnami.com/bitnami", "default", ""); err != nil {
-				t.Fatalf("%v", err)
-			}
-			t.Cleanup(func() {
-				if err = kubeDeleteHelmRepository(t, repo, "default"); err != nil {
-					t.Logf("%v", err)
-				}
-			})
-			// wait until this repo have been indexed and cached up to 10 minutes
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute*10)
-			defer cancel()
-			if err := sem.Acquire(ctx, 1); err != nil {
-				t.Fatalf("Timed out waiting for Redis event: %v", err)
-			}
-		}
-		t.Logf("Done with first part of the test, total repos: [%d], evicted repos: [%d]",
-			totalRepos, len(evictedRepos))
-	}()
-
-	if evictedRepos.Len() == 0 {
-		t.Fatalf("Failing because redis did not evict any entries")
+	loserAcctName := types.NamespacedName{
+		Name:      "test-release-rbac-loser-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtxLoser, err := newGrpcContextForServiceAccountWithoutAccessToAnyNamespace(t, loserAcctName)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	if keys, err := redisCli.Keys(redisCli.Context(), "helmrepositories:*").Result(); err != nil {
-		t.Fatalf("%v", err)
-	} else {
-		// the cache should only big enough to be able to hold at most (totalRepos-1) of the keys
-		// one (or more) entries may have been evicted
-		if len(keys) > totalRepos-1 {
-			t.Fatalf("Expected at most [%d] keys in cache but got: %s", totalRepos-1, keys)
-		}
+	out := kubectlCanI(t, adminAcctName, "get", "helmcharts", ns1)
+	if out != "yes" {
+		t.Errorf("Expected [yes], got [%s]", out)
+	}
+	out = kubectlCanI(t, loserAcctName, "get", "helmcharts", ns1)
+	if out != "no" {
+		t.Errorf("Expected [no], got [%s]", out)
 	}
 
-	// one particular code path I'd like to test:
-	// make sure that GetAvailablePackageVersions() works w.r.t. a cache entry that's been evicted
-	grpcContext := newGrpcAdminContext(t, "test-create-admin")
-
-	// copy the evicted list because before ForEach loop below will modify it in a goroutine
-	evictedCopy := sets.StringKeySet(evictedRepos)
-
-	// do this part in a func so we can defer subscribe.Close
-	func() {
-		subscribe := redisCli.PSubscribe(redisCli.Context(), "__keyevent@0__:*")
-		defer subscribe.Close()
-
-		go redisReceiveNotificationsLoop(t, subscribe.Channel(), nil, &evictedRepos)
-
-		for _, k := range evictedCopy.List() {
-			name := strings.Split(k, ":")[2]
-			t.Logf("Checking apache version in repo [%s]...", name)
-			grpcContext, cancel := context.WithTimeout(grpcContext, defaultContextTimeout)
-			defer cancel()
-			resp, err := fluxPlugin.GetAvailablePackageVersions(
-				grpcContext, &corev1.GetAvailablePackageVersionsRequest{
-					AvailablePackageRef: &corev1.AvailablePackageReference{
-						Context: &corev1.Context{
-							Namespace: "default",
-						},
-						Identifier: name + "/apache",
-					},
-				})
-			if err != nil {
-				t.Fatalf("%v", err)
-			} else if len(resp.PackageAppVersions) < 5 {
-				t.Fatalf("Expected at least 5 versions for apache chart, got: %s", resp)
-			}
-		}
-
-		t.Logf("Done with second part of the test")
-	}()
-
-	// do this part in a func so we can defer subscribe.Close
-	func() {
-		subscribe := redisCli.PSubscribe(redisCli.Context(), "__keyevent@0__:*")
-		defer subscribe.Close()
-
-		// above loop should cause a few more entries to be evicted, but just to be sure let's
-		// load a few more copies of bitnami repo into the cache. The goal of this for loop is
-		// to force redis to evict more repo(s)
-		sem := semaphore.NewWeighted(MAX_REPOS_NEVER)
-		if err := sem.Acquire(context.Background(), MAX_REPOS_NEVER); err != nil {
-			t.Fatalf("%v", err)
-		}
-		go redisReceiveNotificationsLoop(t, subscribe.Channel(), sem, &evictedRepos)
-
-		for ; totalRepos < MAX_REPOS_NEVER && evictedRepos.Len() == evictedCopy.Len(); totalRepos++ {
-			repo := fmt.Sprintf("bitnami-%d", totalRepos)
-			// this is to make sure we allow enough time for repository to be created and come to ready state
-			if err = kubeCreateHelmRepository(t, repo, "https://charts.bitnami.com/bitnami", "default", ""); err != nil {
-				t.Fatalf("%v", err)
-			}
-			t.Cleanup(func() {
-				if err = kubeDeleteHelmRepository(t, repo, "default"); err != nil {
-					t.Logf("%v", err)
-				}
-			})
-			// wait until this repo have been indexed and cached up to 10 minutes
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute*10)
-			defer cancel()
-			if err := sem.Acquire(ctx, 1); err != nil {
-				t.Fatalf("Timed out waiting for Redis event: %v", err)
-			}
-		}
-
-		t.Logf("Done with third part of the test")
-	}()
-
-	if keys, err := redisCli.Keys(redisCli.Context(), "helmrepositories:*").Result(); err != nil {
-		t.Fatalf("%v", err)
-	} else {
-		// the cache should only big enough to be able to hold at most (totalRepos-1) of the keys
-		// one (or more) entries MUST have been evicted
-		if len(keys) > totalRepos-1 {
-			t.Fatalf("Expected at most %d keys in cache but got [%s]", totalRepos-1, keys)
-		}
+	tc := integrationTestCreatePackageSpec{
+		testName: "test chart RBAC",
+		repoUrl:  podinfo_repo_url,
+		request: &corev1.CreateInstalledPackageRequest{
+			AvailablePackageRef: availableRef("podinfo-1/podinfo", ns1),
+			Name:                "my-podinfo",
+			TargetContext: &corev1.Context{
+				// note that Namespace is just the prefix - the actual name will
+				// have a random string appended at the end, e.g. "test-ns2-h23r"
+				// this will happen during the running of the test
+				Namespace: "test-ns2",
+				Cluster:   KubeappsCluster,
+			},
+		},
+		expectedDetail:       expected_detail_test_release_rbac,
+		expectedPodPrefix:    "my-podinfo-",
+		expectedStatusCode:   codes.OK,
+		expectedResourceRefs: expected_resource_refs_basic,
 	}
 
-	// not related to low maxmemory but as long as we are here might as well check that
-	// there is a Unauthenticated failure when there are no credenitals in the request
-	_, err = fluxPlugin.GetAvailablePackageSummaries(context.TODO(), &corev1.GetAvailablePackageSummariesRequest{})
-	if err == nil || status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("Expected Unauthenticated, got %v", err)
+	installedRef := createAndWaitForHelmRelease(t, tc, fluxPluginPackagesClient, fluxPluginReposClient, grpcCtxAdmin, rnd)
+
+	ns2 := tc.request.TargetContext.Namespace
+
+	out = kubectlCanI(t, adminAcctName, "get", fluxHelmReleases, ns2)
+	if out != "yes" {
+		t.Errorf("Expected [yes], got [%s]", out)
 	}
 
-	grpcContext, cancel := context.WithTimeout(grpcContext, 60*time.Second)
+	grpcCtx, cancel := context.WithTimeout(grpcCtxAdmin, defaultContextTimeout)
 	defer cancel()
-	resp2, err := fluxPlugin.GetAvailablePackageSummaries(grpcContext, &corev1.GetAvailablePackageSummariesRequest{})
+
+	resp, err := fluxPluginPackagesClient.GetInstalledPackageSummaries(
+		grpcCtx,
+		&corev1.GetInstalledPackageSummariesRequest{
+			Context: &corev1.Context{
+				Namespace: ns2,
+			},
+		})
 	if err != nil {
-		t.Fatalf("%v", err)
+		t.Fatal(err)
+	} else if len(resp.InstalledPackageSummaries) != 1 {
+		t.Errorf("Unexpected response: %s", common.PrettyPrint(resp))
 	}
 
-	// we need to make sure that response contains packages from all existing repositories
-	// regardless whether they're in the cache or not
-	expected := sets.String{}
-	for i := 0; i < totalRepos; i++ {
-		repo := fmt.Sprintf("bitnami-%d", i)
-		expected.Insert(repo)
-	}
-	for _, s := range resp2.AvailablePackageSummaries {
-		id := strings.Split(s.AvailablePackageRef.Identifier, "/")
-		expected.Delete(id[0])
+	grpcCtx, cancel = context.WithTimeout(grpcCtxAdmin, defaultContextTimeout)
+	defer cancel()
+
+	resp2, err := fluxPluginPackagesClient.GetInstalledPackageDetail(
+		grpcCtx,
+		&corev1.GetInstalledPackageDetailRequest{
+			InstalledPackageRef: installedRef,
+		})
+	if err != nil {
+		t.Fatal(err)
+	} else {
+		expected_detail_test_release_rbac_2.InstalledPackageDetail.InstalledPackageRef = installedRef
+		expected_detail_test_release_rbac_2.InstalledPackageDetail.PostInstallationNotes = strings.ReplaceAll(
+			expected_detail_test_release_rbac_2.InstalledPackageDetail.PostInstallationNotes,
+			"@TARGET_NS@", ns2)
+		expected_detail_test_release_rbac_2.InstalledPackageDetail.AvailablePackageRef.Context.Namespace = ns1
+		compareInstalledPackageDetail(t, resp2, expected_detail_test_release_rbac_2)
 	}
 
-	if expected.Len() != 0 {
-		t.Fatalf("Expected to get packages from these repositories: %s, but did not get any",
-			expected.List())
+	grpcCtx, cancel = context.WithTimeout(grpcCtxAdmin, defaultContextTimeout)
+	defer cancel()
+
+	expectedRefsCopy := []*corev1.ResourceRef{}
+	for _, r := range expected_resource_refs_basic {
+		newR := &corev1.ResourceRef{
+			ApiVersion: r.ApiVersion,
+			Kind:       r.Kind,
+			Name:       r.Name,
+			Namespace:  ns2,
+		}
+		expectedRefsCopy = append(expectedRefsCopy, newR)
+	}
+
+	resp3, err := fluxPluginPackagesClient.GetInstalledPackageResourceRefs(
+		grpcCtx,
+		&corev1.GetInstalledPackageResourceRefsRequest{
+			InstalledPackageRef: installedRef,
+		})
+	if err != nil {
+		t.Fatal(err)
+	} else {
+		opts := cmpopts.IgnoreUnexported(corev1.ResourceRef{})
+		if got, want := resp3.ResourceRefs, expectedRefsCopy; !cmp.Equal(want, got, opts) {
+			t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+		}
+	}
+
+	out = kubectlCanI(t, loserAcctName, "get", fluxHelmReleases, ns2)
+	if out != "no" {
+		t.Errorf("Expected [no], got [%s]", out)
+	}
+
+	grpcCtx, cancel = context.WithTimeout(grpcCtxLoser, defaultContextTimeout)
+	defer cancel()
+
+	_, err = fluxPluginPackagesClient.GetInstalledPackageSummaries(
+		grpcCtx,
+		&corev1.GetInstalledPackageSummariesRequest{
+			Context: &corev1.Context{
+				Namespace: ns2,
+			},
+		})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("Expected PermissionDenied, got %v", err)
+	}
+
+	grpcCtx, cancel = context.WithTimeout(grpcCtxLoser, defaultContextTimeout)
+	defer cancel()
+
+	_, err = fluxPluginPackagesClient.GetInstalledPackageDetail(
+		grpcCtx,
+		&corev1.GetInstalledPackageDetailRequest{
+			InstalledPackageRef: installedRef,
+		})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("Expected PermissionDenied, got %v", err)
+	}
+
+	grpcCtx, cancel = context.WithTimeout(grpcCtxLoser, defaultContextTimeout)
+	defer cancel()
+
+	_, err = fluxPluginPackagesClient.GetInstalledPackageResourceRefs(
+		grpcCtx,
+		&corev1.GetInstalledPackageResourceRefsRequest{
+			InstalledPackageRef: installedRef,
+		})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("Expected PermissionDenied, got %v", err)
+	}
+
+	rules := map[string][]rbacv1.PolicyRule{
+		ns2: {
+			{
+				APIGroups: []string{helmv2beta2.GroupVersion.Group},
+				Resources: []string{fluxHelmReleases},
+				Verbs:     []string{"get", "list"},
+			},
+			// a little weird but currently this is required too:
+			// without it when calling GetInstalledPackageDetail() you will get
+			// error "Failed to get helm release due to rpc
+			// error: code = NotFound desc = Unable to run Helm Get action for release
+			// [test-ns2-8ynh/my-podinfo] in namespace [test-ns2-8ynh]: query: failed to query with
+			// labels: secrets is forbidden: User "system:serviceaccount:default:test-release-rbac-helmreleases"
+			// cannot list resource "secrets" in API group "" in the namespace "test-ns2-8ynh"
+			{
+				APIGroups: []string{""},
+				Resources: []string{"secrets"},
+				Verbs:     []string{"get", "list"},
+			},
+		},
+	}
+
+	svcAcctName := types.NamespacedName{
+		Name:      "test-release-rbac-helmreleases-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtxReadHelmReleases, err := newGrpcContextForServiceAccountWithRules(
+		t, svcAcctName, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out = kubectlCanI(t, svcAcctName, "get", fluxHelmRepositories, ns2)
+	if out != "no" {
+		t.Errorf("Expected [no], got [%s]", out)
+	}
+	out = kubectlCanI(t, svcAcctName, "get", "helmcharts", ns2)
+	if out != "no" {
+		t.Errorf("Expected [no], got [%s]", out)
+	}
+	out = kubectlCanI(t, svcAcctName, "get", fluxHelmReleases, ns2)
+	if out != "yes" {
+		t.Errorf("Expected [yes], got [%s]", out)
+	}
+
+	grpcCtx, cancel = context.WithTimeout(grpcCtxReadHelmReleases, defaultContextTimeout)
+	defer cancel()
+
+	resp, err = fluxPluginPackagesClient.GetInstalledPackageSummaries(
+		grpcCtx,
+		&corev1.GetInstalledPackageSummariesRequest{
+			Context: &corev1.Context{
+				Namespace: ns2,
+			},
+		})
+
+	if err != nil {
+		t.Fatal(err)
+	} else {
+		// should return installed package summaries without chart details
+		expected_summaries_test_release_rbac_1.InstalledPackageSummaries[0].InstalledPackageRef.Context.Namespace = ns2
+		compareInstalledPackageSummaries(t, resp, expected_summaries_test_release_rbac_1)
+	}
+
+	grpcCtx, cancel = context.WithTimeout(grpcCtxReadHelmReleases, defaultContextTimeout)
+	defer cancel()
+
+	resp2, err = fluxPluginPackagesClient.GetInstalledPackageDetail(
+		grpcCtx,
+		&corev1.GetInstalledPackageDetailRequest{
+			InstalledPackageRef: installedRef,
+		})
+	if err != nil {
+		t.Fatal(err)
+	} else {
+		compareInstalledPackageDetail(t, resp2, expected_detail_test_release_rbac_2)
+	}
+
+	grpcCtx, cancel = context.WithTimeout(grpcCtxReadHelmReleases, defaultContextTimeout)
+	defer cancel()
+
+	resp3, err = fluxPluginPackagesClient.GetInstalledPackageResourceRefs(
+		grpcCtx,
+		&corev1.GetInstalledPackageResourceRefsRequest{
+			InstalledPackageRef: installedRef,
+		})
+	if err != nil {
+		t.Fatal(err)
+	} else {
+		opts := cmpopts.IgnoreUnexported(corev1.ResourceRef{})
+		if got, want := resp3.ResourceRefs, expectedRefsCopy; !cmp.Equal(want, got, opts) {
+			t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+		}
+	}
+
+	nsToRules := map[string][]rbacv1.PolicyRule{
+		ns1: {
+			{
+				APIGroups: []string{sourcev1beta2.GroupVersion.Group},
+				Resources: []string{"helmcharts"},
+				Verbs:     []string{"get", "list"},
+			},
+		},
+		ns2: {
+			{
+				APIGroups: []string{helmv2beta2.GroupVersion.Group},
+				Resources: []string{fluxHelmReleases},
+				Verbs:     []string{"get", "list"},
+			},
+			{ // see comment above
+				APIGroups: []string{""},
+				Resources: []string{"secrets"},
+				Verbs:     []string{"get", "list"},
+			},
+		},
+	}
+
+	svcAcctName2 := types.NamespacedName{
+		Name:      "test-release-rbac-helmreleases-and-charts-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtxReadHelmReleasesAndCharts, err := newGrpcContextForServiceAccountWithRules(
+		t, svcAcctName2, nsToRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out = kubectlCanI(t, svcAcctName2, "get", "helmcharts", ns1)
+	if out != "yes" {
+		t.Errorf("Expected [yes], got [%s]", out)
+	}
+	out = kubectlCanI(t, svcAcctName2, "get", fluxHelmReleases, ns2)
+	if out != "yes" {
+		t.Errorf("Expected [yes], got [%s]", out)
+	}
+
+	grpcCtx, cancel = context.WithTimeout(grpcCtxReadHelmReleasesAndCharts, defaultContextTimeout)
+	defer cancel()
+
+	resp, err = fluxPluginPackagesClient.GetInstalledPackageSummaries(
+		grpcCtx,
+		&corev1.GetInstalledPackageSummariesRequest{
+			Context: &corev1.Context{
+				Namespace: ns2,
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	} else {
+		// should return installed package summaries with chart details
+		expected_summaries_test_release_rbac_2.InstalledPackageSummaries[0].InstalledPackageRef.Context.Namespace = ns2
+		compareInstalledPackageSummaries(t, resp, expected_summaries_test_release_rbac_2)
+	}
+
+	grpcCtx, cancel = context.WithTimeout(grpcCtxReadHelmReleasesAndCharts, defaultContextTimeout)
+	defer cancel()
+
+	resp2, err = fluxPluginPackagesClient.GetInstalledPackageDetail(
+		grpcCtx,
+		&corev1.GetInstalledPackageDetailRequest{
+			InstalledPackageRef: installedRef,
+		})
+	if err != nil {
+		t.Fatal(err)
+	} else {
+		compareInstalledPackageDetail(t, resp2, expected_detail_test_release_rbac_2)
 	}
 }
 
-// this test is testing a scenario when a repo that takes a long time to index is added
-// and while the indexing is in progress this repo is deleted by another request.
-// The goal is to make sure that the events are processed by the cache fully in the order
-// they were received and the cache does not end up in inconsistent state
-func TestKindClusterAddThenDeleteRepo(t *testing.T) {
-	_ = checkEnv(t)
-
-	redisCli, err := newRedisClientForIntegrationTest(t)
+func TestKindClusterRBAC_CreateRelease(t *testing.T) {
+	fluxPluginPackagesClient, _, rnd, err := checkEnv(t)
 	if err != nil {
-		t.Fatalf("%+v", err)
+		t.Fatal(err)
 	}
 
-	// now load some large repos (bitnami)
-	// I didn't want to store a large (10MB) copy of bitnami repo in our git,
-	// so for now let it fetch from bitnami website
-	if err = kubeCreateHelmRepository(t, "bitnami-1", "https://charts.bitnami.com/bitnami", "default", ""); err != nil {
-		t.Fatalf("%v", err)
+	ns1 := "test-ns1-" + randSeq(rnd, 4)
+	if err := kubeCreateNamespaceAndCleanup(t, ns1); err != nil {
+		t.Fatal(err)
 	}
-	// wait until this repo reaches 'Ready' state so that long indexation process kicks in
-	if err = kubeWaitUntilHelmRepositoryIsReady(t, "bitnami-1", "default"); err != nil {
-		t.Fatalf("%v", err)
+	name := types.NamespacedName{
+		Name:      "podinfo",
+		Namespace: ns1,
 	}
 
-	if err = kubeDeleteHelmRepository(t, "bitnami-1", "default"); err != nil {
-		t.Fatalf("%v", err)
+	err = kubeAddHelmRepositoryAndCleanup(t, name, "", podinfo_repo_url, "", 0)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	t.Logf("Waiting up to 30 seconds...")
-	time.Sleep(30 * time.Second)
+	err = kubeWaitUntilHelmRepositoryIsReady(t, name)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	if keys, err := redisCli.Keys(redisCli.Context(), "*").Result(); err != nil {
-		t.Fatalf("%v", err)
+	loserAcctName := types.NamespacedName{
+		Name:      "test-release-rbac-loser-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtxLoser, err := newGrpcContextForServiceAccountWithoutAccessToAnyNamespace(
+		t, loserAcctName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ns2 := "test-ns2-" + randSeq(rnd, 4)
+	if err := kubeCreateNamespaceAndCleanup(t, ns2); err != nil {
+		t.Fatal(err)
+	}
+	out := kubectlCanI(t, loserAcctName, "get", "helmcharts", ns2)
+	if out != "no" {
+		t.Errorf("Expected [no], got [%s]", out)
+	}
+
+	out = kubectlCanI(t, loserAcctName, "get", "helmreleases", ns2)
+	if out != "no" {
+		t.Errorf("Expected [no], got [%s]", out)
+	}
+
+	out = kubectlCanI(t, loserAcctName, "create", "helmreleases", ns2)
+	if out != "no" {
+		t.Errorf("Expected [no], got [%s]", out)
+	}
+
+	ctx, cancel := context.WithTimeout(grpcCtxLoser, defaultContextTimeout)
+	defer cancel()
+
+	req := &corev1.CreateInstalledPackageRequest{
+		AvailablePackageRef: availableRef("podinfo/podinfo", ns1),
+		Name:                "podinfo",
+		TargetContext: &corev1.Context{
+			Namespace: ns2,
+			Cluster:   KubeappsCluster,
+		},
+	}
+	_, err = fluxPluginPackagesClient.CreateInstalledPackage(ctx, req)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("Expected PermissionDenied, got %v", err)
+	}
+
+	nsToRules := map[string][]rbacv1.PolicyRule{
+		ns2: {
+			{
+				APIGroups: []string{helmv2beta2.GroupVersion.Group},
+				Resources: []string{fluxHelmReleases},
+				Verbs:     []string{"create"},
+			},
+		},
+	}
+
+	svcAcctName2 := types.NamespacedName{
+		Name:      "test-release-rbac-helmreleases-2-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtx2, err := newGrpcContextForServiceAccountWithRules(
+		t, svcAcctName2, nsToRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel = context.WithTimeout(grpcCtx2, defaultContextTimeout)
+	defer cancel()
+
+	_, err = fluxPluginPackagesClient.CreateInstalledPackage(ctx, req)
+	// perhaps not super intuitive BUT
+	// this should fail due to not having 'get' access for HelmCharts in ns1
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("Expected PermissionDenied, got %v", err)
+	}
+
+	nsToRules = map[string][]rbacv1.PolicyRule{
+		ns1: {
+			{
+				APIGroups: []string{sourcev1beta2.GroupVersion.Group},
+				Resources: []string{"helmcharts"},
+				Verbs:     []string{"get"},
+			},
+		},
+		ns2: {
+			{
+				APIGroups: []string{helmv2beta2.GroupVersion.Group},
+				Resources: []string{fluxHelmReleases},
+				Verbs:     []string{"create"},
+			},
+		},
+	}
+
+	svcAcctName3 := types.NamespacedName{
+		Name:      "test-release-rbac-helmreleases-3-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtx3, err := newGrpcContextForServiceAccountWithRules(
+		t, svcAcctName3, nsToRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel = context.WithTimeout(grpcCtx3, defaultContextTimeout)
+	defer cancel()
+
+	resp, err := fluxPluginPackagesClient.CreateInstalledPackage(ctx, req)
+	if err != nil {
+		t.Fatal(err)
 	} else {
-		if len(keys) != 0 {
-			t.Fatalf("Failing due to unexpected state of the cache. Current keys: %s", keys)
+		// not necessary to delete release because the whole namespace ns2 will be deleted
+		expectedRef := installedRef("podinfo", ns2)
+		opts := cmpopts.IgnoreUnexported(
+			corev1.InstalledPackageDetail{},
+			corev1.InstalledPackageReference{},
+			plugins.Plugin{},
+			corev1.Context{})
+		if got, want := resp.InstalledPackageRef, expectedRef; !cmp.Equal(want, got, opts) {
+			t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
 		}
 	}
 }
 
-func TestKindClusterRepoWithBasicAuth(t *testing.T) {
-	fluxPluginClient := checkEnv(t)
-
-	secretName := "podinfo-basic-auth-secret"
-	repoName := "podinfo-basic-auth"
-
-	if err := kubeCreateBasicAuthSecret(t, "default", secretName, "foo", "bar"); err != nil {
-		t.Fatalf("%v", err)
-	}
-	t.Cleanup(func() {
-		err := kubeDeleteSecret(t, "default", secretName)
-		if err != nil {
-			t.Logf("Failed to delete helm repository due to [%v]", err)
-		}
-	})
-
-	if err := kubeCreateHelmRepository(t, repoName, podinfo_basic_auth_repo_url, "default", secretName); err != nil {
-		t.Fatalf("%v", err)
-	}
-	t.Cleanup(func() {
-		err := kubeDeleteHelmRepository(t, repoName, "default")
-		if err != nil {
-			t.Logf("Failed to delete helm repository due to [%v]", err)
-		}
-	})
-
-	// wait until this repo reaches 'Ready'
-	if err := kubeWaitUntilHelmRepositoryIsReady(t, repoName, "default"); err != nil {
-		t.Fatalf("%v", err)
-	}
-
-	grpcContext := newGrpcAdminContext(t, "test-create-admin-basic-auth")
-
-	const maxWait = 25
-	for i := 0; i <= maxWait; i++ {
-		grpcContext, cancel := context.WithTimeout(grpcContext, defaultContextTimeout)
-		defer cancel()
-		resp, err := fluxPluginClient.GetAvailablePackageSummaries(
-			grpcContext,
-			&corev1.GetAvailablePackageSummariesRequest{
-				Context: &corev1.Context{
-					Namespace: "default",
-				},
-			})
-		if err == nil {
-			opt1 := cmpopts.IgnoreUnexported(
-				corev1.GetAvailablePackageSummariesResponse{},
-				corev1.AvailablePackageSummary{},
-				corev1.AvailablePackageReference{},
-				corev1.Context{},
-				plugins.Plugin{},
-				corev1.PackageAppVersion{})
-			opt2 := cmpopts.SortSlices(lessAvailablePackageFunc)
-			if got, want := resp, available_package_summaries_podinfo_basic_auth; !cmp.Equal(got, want, opt1, opt2) {
-				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opt1, opt2))
-			}
-			break
-		} else if i == maxWait {
-			t.Fatalf("Timed out waiting for available package summaries, last response: %v, last error: [%v]", resp, err)
-		} else {
-			t.Logf("Waiting 2s for repository [%s] to be indexed, attempt [%d/%d]...", repoName, i+1, maxWait)
-			time.Sleep(2 * time.Second)
-		}
-	}
-
-	availablePackageRef := availableRef(repoName+"/podinfo", "default")
-
-	// first try the negative case, no auth - should fail due to not being able to
-	// read secrets in all namespaces
-	fluxPluginServiceAccount := "test-repo-with-basic-auth"
-	ctx, cancel := context.WithTimeout(newGrpcFluxPluginContext(t, fluxPluginServiceAccount), defaultContextTimeout)
-	defer cancel()
-	_, err := fluxPluginClient.GetAvailablePackageDetail(
-		ctx,
-		&corev1.GetAvailablePackageDetailRequest{AvailablePackageRef: availablePackageRef})
-	if err == nil {
-		t.Fatalf("Expected error, did not get one")
-	} else if status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("GetAvailablePackageDetailRequest expected Unauthenticated got %v", err)
-	}
-
-	// this should succeed as it is done in the context of cluster admin
-	grpcContext, cancel = context.WithTimeout(grpcContext, defaultContextTimeout)
-	defer cancel()
-	resp, err := fluxPluginClient.GetAvailablePackageDetail(
-		grpcContext,
-		&corev1.GetAvailablePackageDetailRequest{AvailablePackageRef: availablePackageRef})
+func TestKindClusterRBAC_UpdateRelease(t *testing.T) {
+	fluxPluginPackagesClient, fluxPluginReposClient, rnd, err := checkEnv(t)
 	if err != nil {
-		t.Fatalf("%v", err)
+		t.Fatal(err)
 	}
 
-	compareActualVsExpectedAvailablePackageDetail(t, resp.AvailablePackageDetail, expected_detail_podinfo_basic_auth.AvailablePackageDetail)
+	ns1 := "test-ns1-" + randSeq(rnd, 4)
+	if err := kubeCreateNamespaceAndCleanup(t, ns1); err != nil {
+		t.Fatal(err)
+	}
+	tc := integrationTestCreatePackageSpec{
+		testName: "test chart RBAC",
+		repoUrl:  podinfo_repo_url,
+		request: &corev1.CreateInstalledPackageRequest{
+			AvailablePackageRef: availableRef("podinfo-1/podinfo", ns1),
+			Name:                "my-podinfo",
+			TargetContext: &corev1.Context{
+				// note that Namespace is just the prefix - the actual name will
+				// have a random string appended at the end, e.g. "test-ns2-h23r"
+				// this will happen during the running of the test
+				Namespace: "test-ns2",
+				Cluster:   KubeappsCluster,
+			},
+		},
+		expectedDetail:       expected_detail_test_release_rbac_3,
+		expectedPodPrefix:    "my-podinfo-",
+		expectedStatusCode:   codes.OK,
+		expectedResourceRefs: expected_resource_refs_basic,
+	}
+
+	adminAcctName := types.NamespacedName{
+		Name:      "test-release-rbac-admin-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtxAdmin, err := newGrpcAdminContext(t, adminAcctName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installedRef := createAndWaitForHelmRelease(t, tc, fluxPluginPackagesClient, fluxPluginReposClient, grpcCtxAdmin, rnd)
+
+	ns2 := tc.request.TargetContext.Namespace
+
+	loserAcctName := types.NamespacedName{
+		Name:      "test-release-rbac-loser-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtxLoser, err := newGrpcContextForServiceAccountWithoutAccessToAnyNamespace(
+		t, loserAcctName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(grpcCtxLoser, defaultContextTimeout)
+	defer cancel()
+
+	req := &corev1.UpdateInstalledPackageRequest{
+		InstalledPackageRef: installedRef,
+		Values:              "{\"ui\": { \"message\": \"what we do in the shadows\" } }",
+	}
+	_, err = fluxPluginPackagesClient.UpdateInstalledPackage(ctx, req)
+	// should fail due to rpc error: code = PermissionDenied desc = Forbidden to get the
+	// HelmRelease 'test-ns2-b8jg/my-podinfo' due to 'helmreleases.helm.toolkit.fluxcd.io
+	// "my-podinfo" is forbidden: User "system:serviceaccount:default:test-release-rbac-loser"
+	// cannot get resource "helmreleases" in API group "helm.toolkit.fluxcd.io" in the namespace
+	// "test-ns2-b8jg"'
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("Expected PermissionDenied, got %v", err)
+	}
+
+	nsToRules := map[string][]rbacv1.PolicyRule{
+		ns2: {
+			{
+				APIGroups: []string{helmv2beta2.GroupVersion.Group},
+				Resources: []string{fluxHelmReleases},
+				Verbs:     []string{"get"},
+			},
+		},
+	}
+
+	svcAcctName2 := types.NamespacedName{
+		Name:      "test-release-rbac-helmreleases-2-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtx2, err := newGrpcContextForServiceAccountWithRules(
+		t, svcAcctName2, nsToRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel = context.WithTimeout(grpcCtx2, defaultContextTimeout)
+	defer cancel()
+
+	_, err = fluxPluginPackagesClient.UpdateInstalledPackage(ctx, req)
+	// should fail due to rpc error: code = PermissionDenied desc = Forbidden to update the
+	// HelmRelease 'test-ns2-w8xd/my-podinfo' due to 'helmreleases.helm.toolkit.fluxcd.io
+	// "my-podinfo" is forbidden: User "system:serviceaccount:default:test-release-rbac-helmreleases-2"
+	// cannot update resource "helmreleases" in API group "helm.toolkit.fluxcd.io" in the
+	// namespace "test-ns2-w8xd"'
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("Expected PermissionDenied, got %v", err)
+	}
+
+	nsToRules = map[string][]rbacv1.PolicyRule{
+		ns2: {
+			{
+				APIGroups: []string{helmv2beta2.GroupVersion.Group},
+				Resources: []string{fluxHelmReleases},
+				Verbs:     []string{"get", "update"},
+			},
+		},
+	}
+
+	svcAcctName3 := types.NamespacedName{
+		Name:      "test-release-rbac-helmreleases-3-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtx3, err := newGrpcContextForServiceAccountWithRules(
+		t, svcAcctName3, nsToRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel = context.WithTimeout(grpcCtx3, defaultContextTimeout)
+	defer cancel()
+
+	resp, err := fluxPluginPackagesClient.UpdateInstalledPackage(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	} else {
+		// not necessary to delete release because the whole namespace ns2 will be deleted
+		opts := cmpopts.IgnoreUnexported(
+			corev1.InstalledPackageDetail{},
+			corev1.InstalledPackageReference{},
+			plugins.Plugin{},
+			corev1.Context{})
+		if got, want := resp.InstalledPackageRef, installedRef; !cmp.Equal(want, got, opts) {
+			t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+		}
+	}
 }
 
-func createAndWaitForHelmRelease(t *testing.T, tc integrationTestCreateSpec, fluxPluginClient fluxplugin.FluxV2PackagesServiceClient, grpcContext context.Context) *corev1.InstalledPackageReference {
+func TestKindClusterRBAC_DeleteRelease(t *testing.T) {
+	fluxPluginPackagesClient, fluxPluginReposClient, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ns1 := "test-ns1-" + randSeq(rnd, 4)
+	if err := kubeCreateNamespaceAndCleanup(t, ns1); err != nil {
+		t.Fatal(err)
+	}
+	tc := integrationTestCreatePackageSpec{
+		testName: "test chart RBAC",
+		repoUrl:  podinfo_repo_url,
+		request: &corev1.CreateInstalledPackageRequest{
+			AvailablePackageRef: availableRef("podinfo-1/podinfo", ns1),
+			Name:                "my-podinfo",
+			TargetContext: &corev1.Context{
+				// note that Namespace is just the prefix - the actual name will
+				// have a random string appended at the end, e.g. "test-ns2-h23r"
+				// this will happen during the running of the test
+				Namespace: "test-ns2",
+				Cluster:   KubeappsCluster,
+			},
+		},
+		expectedDetail:       expected_detail_test_release_rbac_4,
+		expectedPodPrefix:    "my-podinfo-",
+		expectedStatusCode:   codes.OK,
+		expectedResourceRefs: expected_resource_refs_basic,
+	}
+
+	adminAcctName := types.NamespacedName{
+		Name:      "test-release-rbac-admin-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtxAdmin, err := newGrpcAdminContext(t, adminAcctName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installedRef := createAndWaitForHelmRelease(t, tc, fluxPluginPackagesClient, fluxPluginReposClient, grpcCtxAdmin, rnd)
+
+	ns2 := tc.request.TargetContext.Namespace
+
+	loserAcctName := types.NamespacedName{
+		Name:      "test-release-rbac-loser-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtxLoser, err := newGrpcContextForServiceAccountWithoutAccessToAnyNamespace(
+		t, loserAcctName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(grpcCtxLoser, defaultContextTimeout)
+	defer cancel()
+
+	req := &corev1.DeleteInstalledPackageRequest{
+		InstalledPackageRef: installedRef,
+	}
+
+	_, err = fluxPluginPackagesClient.DeleteInstalledPackage(ctx, req)
+	// should fail due to rpc error: code = PermissionDenied desc = Forbidden to delete the
+	// HelmRelease 'my-podinfo' due to 'helmreleases.helm.toolkit.fluxcd.io "my-podinfo" is
+	// forbidden: User "system:serviceaccount:default:test-release-rbac-loser" cannot delete
+	// resource "helmreleases" in API group "helm.toolkit.fluxcd.io" in the namespace "test-ns2-g4yp"'
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("Expected PermissionDenied, got %v", err)
+	}
+
+	nsToRules := map[string][]rbacv1.PolicyRule{
+		ns2: {
+			{
+				APIGroups: []string{helmv2beta2.GroupVersion.Group},
+				Resources: []string{fluxHelmReleases},
+				Verbs:     []string{"delete"},
+			},
+		},
+	}
+
+	svcAcctName := types.NamespacedName{
+		Name:      "test-release-rbac-helmreleases-3-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtx3, err := newGrpcContextForServiceAccountWithRules(
+		t, svcAcctName, nsToRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel = context.WithTimeout(grpcCtx3, defaultContextTimeout)
+	defer cancel()
+
+	_, err = fluxPluginPackagesClient.DeleteInstalledPackage(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func createAndWaitForHelmRelease(
+	t *testing.T,
+	tc integrationTestCreatePackageSpec,
+	fluxPluginPackagesClient fluxplugin.FluxV2PackagesServiceClient,
+	fluxPluginReposClient fluxplugin.FluxV2RepositoriesServiceClient,
+	grpcContext context.Context, rnd *rand.Rand) *corev1.InstalledPackageReference {
+
 	availablePackageRef := tc.request.AvailablePackageRef
 	idParts := strings.Split(availablePackageRef.Identifier, "/")
-	err := kubeCreateHelmRepository(t, idParts[0], tc.repoUrl, availablePackageRef.Context.Namespace, "")
-	if err != nil {
-		t.Fatalf("%+v", err)
+	name := types.NamespacedName{
+		Name:      idParts[0],
+		Namespace: availablePackageRef.Context.Namespace,
 	}
-	t.Cleanup(func() {
-		err = kubeDeleteHelmRepository(t, idParts[0], availablePackageRef.Context.Namespace)
-		if err != nil {
-			t.Logf("Failed to delete helm source due to [%v]", err)
+
+	secretName := ""
+	if tc.repoSecret != nil {
+		secretName = tc.repoSecret.Name
+
+		if err := kubeCreateSecretAndCleanup(t, tc.repoSecret); err != nil {
+			t.Fatal(err)
 		}
-	})
+	}
+
+	err := kubeAddHelmRepositoryAndCleanup(t, name, tc.repoType, tc.repoUrl, secretName, tc.repoInterval)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// need to wait until repo is indexed by flux plugin
 	const maxWait = 25
 	for i := 0; i <= maxWait; i++ {
 		grpcContext, cancel := context.WithTimeout(grpcContext, defaultContextTimeout)
 		defer cancel()
-		resp, err := fluxPluginClient.GetAvailablePackageDetail(
+
+		resp, err := fluxPluginPackagesClient.GetAvailablePackageDetail(
 			grpcContext,
 			&corev1.GetAvailablePackageDetailRequest{AvailablePackageRef: availablePackageRef})
 		if err == nil {
 			break
 		} else if i == maxWait {
-			t.Fatalf("Timed out waiting for available package [%s], last response: %v, last error: [%v]", availablePackageRef, resp, err)
+			if repo, err2 := kubeGetHelmRepository(t, name); err2 == nil && repo != nil {
+				t.Fatalf("Timed out waiting for available package [%s], last response: %v, last error: [%v],\nhelm repository:%s",
+					availablePackageRef, resp, err, common.PrettyPrint(repo))
+			} else {
+				t.Fatalf("Timed out waiting for available package [%s], last response: %v, last error: [%v]",
+					availablePackageRef, resp, err)
+			}
 		} else {
 			t.Logf("Waiting 1s for repository [%s] to be indexed, attempt [%d/%d]...", idParts[0], i+1, maxWait)
 			time.Sleep(1 * time.Second)
@@ -765,24 +1559,26 @@ func createAndWaitForHelmRelease(t *testing.T, tc integrationTestCreateSpec, flu
 	// run multiple times in a row and they fail due to the fact that the specified namespace
 	// in 'Terminating' state
 	if tc.request.TargetContext.Namespace != "" {
-		tc.request.TargetContext.Namespace += "-" + randSeq(4)
+		tc.request.TargetContext.Namespace += "-" + randSeq(rnd, 4)
 
-		if !tc.noPreCreateNs {
-			// per https://github.com/kubeapps/kubeapps/pull/3640#issuecomment-950383123
-			kubeCreateNamespace(t, tc.request.TargetContext.Namespace)
-			t.Cleanup(func() {
-				err = kubeDeleteNamespace(t, tc.request.TargetContext.Namespace)
-				if err != nil {
-					t.Logf("Failed to delete namespace [%s] due to [%v]", tc.request.TargetContext.Namespace, err)
-				}
-			})
+		if !tc.dontCreateNs {
+			// per https://github.com/vmware-tanzu/kubeapps/pull/3640#issuecomment-950383123
+			if err := kubeCreateNamespaceAndCleanup(t, tc.request.TargetContext.Namespace); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 
-	if tc.request.ReconciliationOptions != nil && tc.request.ReconciliationOptions.ServiceAccountName != "" {
-		_, err = kubeCreateAdminServiceAccount(t, tc.request.ReconciliationOptions.ServiceAccountName, tc.request.TargetContext.Namespace)
+	if tc.request.ReconciliationOptions != nil &&
+		tc.request.ReconciliationOptions.ServiceAccountName != "" &&
+		!tc.dontCreateReleaseSA {
+		svcAcctName := types.NamespacedName{
+			Name:      tc.request.ReconciliationOptions.ServiceAccountName,
+			Namespace: tc.request.TargetContext.Namespace,
+		}
+		_, err = kubeCreateAdminServiceAccount(t, svcAcctName)
 		if err != nil {
-			t.Fatalf("%+v", err)
+			t.Fatal(err)
 		}
 		// it appears that if service account is deleted before the helmrelease object that uses it,
 		// when you try to delete the helmrelease, the "delete" operation gets stuck and the only
@@ -790,16 +1586,26 @@ func createAndWaitForHelmRelease(t *testing.T, tc integrationTestCreateSpec, flu
 		// So we'll cleanup the service account only after the corresponding helmrelease has been deleted
 		t.Cleanup(func() {
 			if !tc.expectInstallFailure {
+				name := types.NamespacedName{
+					Name:      tc.expectedDetail.InstalledPackageRef.Identifier,
+					Namespace: tc.expectedDetail.InstalledPackageRef.Context.Namespace,
+				}
 				for i := 0; i < 20; i++ {
-					exists, _ := kubeExistsHelmRelease(t, tc.expectedDetail.InstalledPackageRef.Identifier, tc.expectedDetail.InstalledPackageRef.Context.Namespace)
+					exists, _ := kubeExistsHelmRelease(t, name)
 					if exists {
+						t.Logf("Waiting for garbage cleanup for [%s]...", name)
 						time.Sleep(300 * time.Millisecond)
 					} else {
 						break
 					}
 				}
 			}
-			err := kubeDeleteServiceAccount(t, tc.request.ReconciliationOptions.ServiceAccountName, tc.request.TargetContext.Namespace)
+
+			name := types.NamespacedName{
+				Name:      tc.request.ReconciliationOptions.ServiceAccountName,
+				Namespace: tc.request.TargetContext.Namespace,
+			}
+			err := kubeDeleteServiceAccountWithClusterRoleBinding(t, name)
 			if err != nil {
 				t.Logf("Failed to delete service account due to [%v]", err)
 			}
@@ -812,14 +1618,14 @@ func createAndWaitForHelmRelease(t *testing.T, tc integrationTestCreateSpec, flu
 	if tc.expectedStatusCode == codes.Unauthenticated {
 		ctx = context.TODO()
 	}
-	resp, err := fluxPluginClient.CreateInstalledPackage(ctx, tc.request)
+	resp, err := fluxPluginPackagesClient.CreateInstalledPackage(ctx, tc.request)
 	if tc.expectedStatusCode != codes.OK {
 		if status.Code(err) != tc.expectedStatusCode {
 			t.Fatalf("Expected %v, got: %v", tc.expectedStatusCode, err)
 		}
 		return nil // done, nothing more to check
 	} else if err != nil {
-		t.Fatalf("%+v", err)
+		t.Fatalf("CreateInstalledPackage failed due to: %+v", err)
 	}
 
 	if tc.expectedDetail != nil {
@@ -830,7 +1636,7 @@ func createAndWaitForHelmRelease(t *testing.T, tc integrationTestCreateSpec, flu
 		tc.expectedDetail.Name = tc.request.Name
 		if tc.request.ReconciliationOptions == nil {
 			tc.expectedDetail.ReconciliationOptions = &corev1.ReconciliationOptions{
-				Interval: 60,
+				Interval: "1m",
 			}
 		}
 	}
@@ -847,14 +1653,18 @@ func createAndWaitForHelmRelease(t *testing.T, tc integrationTestCreateSpec, flu
 
 	if !tc.noCleanup {
 		t.Cleanup(func() {
-			err = kubeDeleteHelmRelease(t, installedPackageRef.Identifier, installedPackageRef.Context.Namespace)
+			name := types.NamespacedName{
+				Name:      installedPackageRef.Identifier,
+				Namespace: installedPackageRef.Context.Namespace,
+			}
+			err = kubeDeleteHelmRelease(t, name)
 			if err != nil {
 				t.Logf("Failed to delete helm release due to [%v]", err)
 			}
 		})
 	}
 
-	actualResp := waitUntilInstallCompletes(t, fluxPluginClient, grpcContext, installedPackageRef, tc.expectInstallFailure)
+	actualDetailResp, actualRefsResp := waitUntilInstallCompletes(t, fluxPluginPackagesClient, grpcContext, installedPackageRef, tc.expectInstallFailure)
 
 	tc.expectedDetail.PostInstallationNotes = strings.ReplaceAll(
 		tc.expectedDetail.PostInstallationNotes, "@TARGET_NS@", tc.request.TargetContext.Namespace)
@@ -863,7 +1673,7 @@ func createAndWaitForHelmRelease(t *testing.T, tc integrationTestCreateSpec, flu
 		InstalledPackageDetail: tc.expectedDetail,
 	}
 
-	compareActualVsExpectedGetInstalledPackageDetailResponse(t, actualResp, expectedResp)
+	compareInstalledPackageDetail(t, actualDetailResp, expectedResp)
 
 	if !tc.expectInstallFailure {
 		// check artifacts in target namespace:
@@ -871,7 +1681,7 @@ func createAndWaitForHelmRelease(t *testing.T, tc integrationTestCreateSpec, flu
 			tc.expectedPodPrefix, "@TARGET_NS@", tc.request.TargetContext.Namespace)
 		pods, err := kubeGetPodNames(t, tc.request.TargetContext.Namespace)
 		if err != nil {
-			t.Fatalf("%+v", err)
+			t.Fatal(err)
 		}
 		if len(pods) != 1 {
 			t.Errorf("expected 1 pod, got: %s", pods)
@@ -880,553 +1690,85 @@ func createAndWaitForHelmRelease(t *testing.T, tc integrationTestCreateSpec, flu
 				expectedPodPrefix, tc.request.TargetContext.Namespace, pods)
 		}
 	}
+
+	if tc.expectedResourceRefs != nil {
+		expectedRefsCopy := []*corev1.ResourceRef{}
+		for _, r := range tc.expectedResourceRefs {
+			newR := &corev1.ResourceRef{
+				ApiVersion: r.ApiVersion,
+				Kind:       r.Kind,
+				Name:       r.Name,
+				Namespace:  tc.request.TargetContext.Namespace,
+			}
+			expectedRefsCopy = append(expectedRefsCopy, newR)
+		}
+		opts := cmpopts.IgnoreUnexported(corev1.ResourceRef{})
+		if got, want := actualRefsResp.ResourceRefs, expectedRefsCopy; !cmp.Equal(want, got, opts) {
+			t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+		}
+	}
 	return installedPackageRef
 }
 
-func waitUntilInstallCompletes(t *testing.T, fluxPluginClient fluxplugin.FluxV2PackagesServiceClient, grpcContext context.Context, installedPackageRef *corev1.InstalledPackageReference, expectInstallFailure bool) (actualResp *corev1.GetInstalledPackageDetailResponse) {
-	const maxWait = 30
-	for i := 0; i <= maxWait; i++ {
+func waitUntilInstallCompletes(
+	t *testing.T,
+	fluxPluginPackagesClient fluxplugin.FluxV2PackagesServiceClient,
+	grpcContext context.Context,
+	installedPackageRef *corev1.InstalledPackageReference,
+	expectInstallFailure bool) (
+	actualDetailResp *corev1.GetInstalledPackageDetailResponse,
+	actualRefsResp *corev1.GetInstalledPackageResourceRefsResponse) {
+	var i, maxRetries = 0, 30
+	for ; i < maxRetries; i++ {
 		grpcContext, cancel := context.WithTimeout(grpcContext, defaultContextTimeout)
 		defer cancel()
-		resp2, err := fluxPluginClient.GetInstalledPackageDetail(
+		resp2, err := fluxPluginPackagesClient.GetInstalledPackageDetail(
 			grpcContext,
 			&corev1.GetInstalledPackageDetailRequest{InstalledPackageRef: installedPackageRef})
 		if err != nil {
-			t.Fatalf("%+v", err)
+			t.Fatal(err)
 		}
 
 		if !expectInstallFailure {
 			if resp2.InstalledPackageDetail.Status.Ready == true &&
 				resp2.InstalledPackageDetail.Status.Reason == corev1.InstalledPackageStatus_STATUS_REASON_INSTALLED {
-				actualResp = resp2
+				actualDetailResp = resp2
 				break
 			}
 		} else {
-			if resp2.InstalledPackageDetail.Status.Ready == false &&
-				resp2.InstalledPackageDetail.Status.Reason == corev1.InstalledPackageStatus_STATUS_REASON_FAILED {
-				actualResp = resp2
+			if resp2.InstalledPackageDetail.Status.Reason == corev1.InstalledPackageStatus_STATUS_REASON_FAILED ||
+				resp2.InstalledPackageDetail.Status.Reason == corev1.InstalledPackageStatus_STATUS_REASON_INSTALLED {
+				actualDetailResp = resp2
 				break
 			}
 		}
 		t.Logf("Waiting 2s until install completes due to: [%s], userReason: [%s], attempt: [%d/%d]...",
-			resp2.InstalledPackageDetail.Status.Reason, resp2.InstalledPackageDetail.Status.UserReason, i+1, maxWait)
+			resp2.InstalledPackageDetail.Status.Reason, resp2.InstalledPackageDetail.Status.UserReason, i+1, maxRetries)
 		time.Sleep(2 * time.Second)
 	}
 
-	if actualResp == nil {
+	if i == maxRetries {
 		t.Fatalf("Timed out waiting for task to complete")
+	} else if actualDetailResp == nil {
+		t.Fatalf("Unexpected state: actual detail response is nil")
+	} else if actualDetailResp.InstalledPackageDetail.Status.Ready {
+		t.Logf("Install succeeded. Now getting installed package resource refs for [%s]...", installedPackageRef.Identifier)
+		grpcContext, cancel := context.WithTimeout(grpcContext, defaultContextTimeout)
+		defer cancel()
+		var err error
+		actualRefsResp, err = fluxPluginPackagesClient.GetInstalledPackageResourceRefs(
+			grpcContext,
+			&corev1.GetInstalledPackageResourceRefsRequest{InstalledPackageRef: installedPackageRef})
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		t.Logf("Install of [%s/%s] completed with [%s], userReason: [%s]",
+			installedPackageRef.Context.Namespace,
+			installedPackageRef.Identifier,
+			actualDetailResp.InstalledPackageDetail.Status.Reason,
+			actualDetailResp.InstalledPackageDetail.Status.UserReason,
+		)
 	}
-	return actualResp
+	return actualDetailResp, actualRefsResp
 }
-
-// global vars
-// why define these here? see https://github.com/kubeapps/kubeapps/pull/3736#discussion_r745246398
-var (
-	create_request_basic = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-1/podinfo", "default"),
-		Name:                "my-podinfo",
-		TargetContext: &corev1.Context{
-			// note that Namespace is just the prefix - the actual name will
-			// have a random string appended at the end, e.g. "test-1-h23r"
-			// this will happen during the running of the test
-			Namespace: "test-1",
-			Cluster:   KubeappsCluster,
-		},
-	}
-
-	// specify just the fields that cannot be easily computed based on the request
-	expected_detail_basic = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "*",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "6.0.0",
-			AppVersion: "6.0.0",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo 8080:9898\n",
-	}
-
-	create_request_semver_constraint = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-2/podinfo", "default"),
-		Name:                "my-podinfo-2",
-		TargetContext: &corev1.Context{
-			Namespace: "test-2",
-			Cluster:   KubeappsCluster,
-		},
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "> 5",
-		},
-	}
-
-	expected_detail_semver_constraint = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "> 5",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "6.0.0",
-			AppVersion: "6.0.0",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-2 8080:9898\n",
-	}
-
-	create_request_reconcile_options = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-3/podinfo", "default"),
-		Name:                "my-podinfo-3",
-		TargetContext: &corev1.Context{
-			Namespace: "test-3",
-			Cluster:   KubeappsCluster,
-		},
-		ReconciliationOptions: &corev1.ReconciliationOptions{
-			Interval:           60,
-			Suspend:            false,
-			ServiceAccountName: "foo",
-		},
-	}
-
-	expected_detail_reconcile_options = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "*",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "6.0.0",
-			AppVersion: "6.0.0",
-		},
-		ReconciliationOptions: &corev1.ReconciliationOptions{
-			Interval:           60,
-			Suspend:            false,
-			ServiceAccountName: "foo",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-3 8080:9898\n",
-	}
-
-	create_request_with_values = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-4/podinfo", "default"),
-		Name:                "my-podinfo-4",
-		TargetContext: &corev1.Context{
-			Namespace: "test-4",
-			Cluster:   KubeappsCluster,
-		},
-		Values: "{\"ui\": { \"message\": \"what we do in the shadows\" } }",
-	}
-
-	expected_detail_with_values = &corev1.InstalledPackageDetail{
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "6.0.0",
-			AppVersion: "6.0.0",
-		},
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "*",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-4 8080:9898\n",
-		ValuesApplied: "{\"ui\":{\"message\":\"what we do in the shadows\"}}",
-	}
-
-	create_request_install_fails = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-5/podinfo", "default"),
-		Name:                "my-podinfo-5",
-		TargetContext: &corev1.Context{
-			Namespace: "test-5",
-			Cluster:   KubeappsCluster,
-		},
-		Values: "{\"replicaCount\": \"what we do in the shadows\" }",
-	}
-
-	expected_detail_install_fails = &corev1.InstalledPackageDetail{
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "6.0.0",
-		},
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "*",
-		},
-		Status: &corev1.InstalledPackageStatus{
-			Ready:  false,
-			Reason: corev1.InstalledPackageStatus_STATUS_REASON_FAILED,
-			// most of the time it fails with
-			//   "InstallFailed: install retries exhausted",
-			// but every once in a while you get
-			//   "InstallFailed: Helm install failed: unable to build kubernetes objects from release manifest: error
-			//    validating "": error validating data: ValidationError(Deployment.spec.replicas): invalid type for
-			//    io.k8s.api.apps.v1.DeploymentSpec.replicas: got "string""
-			// so we'll just test the prefix
-			UserReason: "InstallFailed: ",
-		},
-		ValuesApplied: "{\"replicaCount\":\"what we do in the shadows\"}",
-	}
-
-	create_request_podinfo_5_2_1 = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-6/podinfo", "default"),
-		Name:                "my-podinfo-6",
-		TargetContext: &corev1.Context{
-			Namespace: "test-6",
-			Cluster:   KubeappsCluster,
-		},
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-	}
-
-	expected_detail_podinfo_5_2_1 = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "5.2.1",
-			AppVersion: "5.2.1",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-6 8080:9898\n",
-	}
-
-	expected_detail_podinfo_6_0_0 = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "6.0.0",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "6.0.0",
-			AppVersion: "6.0.0",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-6 8080:9898\n",
-	}
-
-	create_request_podinfo_5_2_1_no_values = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-7/podinfo", "default"),
-		Name:                "my-podinfo-7",
-		TargetContext: &corev1.Context{
-			Namespace: "test-7",
-			Cluster:   KubeappsCluster,
-		},
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-	}
-
-	expected_detail_podinfo_5_2_1_no_values = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "5.2.1",
-			AppVersion: "5.2.1",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-7 8080:9898\n",
-	}
-
-	expected_detail_podinfo_5_2_1_values = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "5.2.1",
-			AppVersion: "5.2.1",
-		},
-		ValuesApplied: "{\"ui\":{\"message\":\"what we do in the shadows\"}}",
-		Status:        statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-7 8080:9898\n",
-	}
-
-	create_request_podinfo_5_2_1_values_2 = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-8/podinfo", "default"),
-		Name:                "my-podinfo-8",
-		TargetContext: &corev1.Context{
-			Namespace: "test-8",
-			Cluster:   KubeappsCluster,
-		},
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		Values: "{\"ui\":{\"message\":\"what we do in the shadows\"}}",
-	}
-
-	expected_detail_podinfo_5_2_1_values_2 = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "5.2.1",
-			AppVersion: "5.2.1",
-		},
-		ValuesApplied: "{\"ui\":{\"message\":\"what we do in the shadows\"}}",
-		Status:        statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-8 8080:9898\n",
-	}
-
-	expected_detail_podinfo_5_2_1_values_3 = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "5.2.1",
-			AppVersion: "5.2.1",
-		},
-		ValuesApplied: "{\"ui\":{\"message\":\"Le Bureau des Légendes\"}}",
-		Status:        statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-8 8080:9898\n",
-	}
-
-	create_request_podinfo_5_2_1_values_4 = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-9/podinfo", "default"),
-		Name:                "my-podinfo-9",
-		TargetContext: &corev1.Context{
-			Namespace: "test-9",
-			Cluster:   KubeappsCluster,
-		},
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		Values: "{\"ui\":{\"message\":\"what we do in the shadows\"}}",
-	}
-
-	expected_detail_podinfo_5_2_1_values_4 = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "5.2.1",
-			AppVersion: "5.2.1",
-		},
-		ValuesApplied: "{\"ui\":{\"message\":\"what we do in the shadows\"}}",
-		Status:        statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-9 8080:9898\n",
-	}
-
-	expected_detail_podinfo_5_2_1_values_5 = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "5.2.1",
-			AppVersion: "5.2.1",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-9 8080:9898\n",
-	}
-
-	create_request_podinfo_5_2_1_values_6 = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-10/podinfo", "default"),
-		Name:                "my-podinfo-10",
-		TargetContext: &corev1.Context{
-			Namespace: "test-10",
-			Cluster:   KubeappsCluster,
-		},
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		Values: "{\"ui\":{\"message\":\"what we do in the shadows\"}}",
-	}
-
-	expected_detail_podinfo_5_2_1_values_6 = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "5.2.1",
-			AppVersion: "5.2.1",
-		},
-		ValuesApplied: "{\"ui\":{\"message\":\"what we do in the shadows\"}}",
-		Status:        statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-10 8080:9898\n",
-	}
-
-	create_request_podinfo_7 = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-11/podinfo", "default"),
-		Name:                "my-podinfo-11",
-		TargetContext: &corev1.Context{
-			Namespace: "test-11",
-			Cluster:   KubeappsCluster,
-		},
-	}
-
-	expected_detail_podinfo_7 = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "*",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "6.0.0",
-			AppVersion: "6.0.0",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-11 8080:9898\n",
-	}
-
-	update_request_1 = &corev1.UpdateInstalledPackageRequest{
-		// InstalledPackageRef will be filled in by the code below after a call to create(...) completes
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "6.0.0",
-		},
-	}
-
-	update_request_2 = &corev1.UpdateInstalledPackageRequest{
-		// InstalledPackageRef will be filled in by the code below after a call to create(...) completes
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		Values: "{\"ui\": { \"message\": \"what we do in the shadows\" } }",
-	}
-
-	update_request_3 = &corev1.UpdateInstalledPackageRequest{
-		// InstalledPackageRef will be filled in by the code below after a call to create(...) completes
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		Values: "{\"ui\": { \"message\": \"Le Bureau des Légendes\" } }",
-	}
-
-	update_request_4 = &corev1.UpdateInstalledPackageRequest{
-		// InstalledPackageRef will be filled in by the code below after a call to create(...) completes
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		Values: "",
-	}
-
-	update_request_5 = &corev1.UpdateInstalledPackageRequest{
-		// InstalledPackageRef will be filled in by the code below after a call to create(...) completes
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		Values: "{\"ui\": { \"message\": \"what we do in the shadows\" } }",
-	}
-
-	update_request_6 = &corev1.UpdateInstalledPackageRequest{
-		// InstalledPackageRef will be filled in by the code below after a call to create(...) completes
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		Values: "{\"ui\": { \"message\": \"what we do in the shadows\" } }",
-	}
-
-	create_request_podinfo_for_delete_1 = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-12/podinfo", "default"),
-		Name:                "my-podinfo-12",
-		TargetContext: &corev1.Context{
-			Namespace: "test-12",
-			Cluster:   KubeappsCluster,
-		},
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-	}
-
-	expected_detail_podinfo_for_delete_1 = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "5.2.1",
-			AppVersion: "5.2.1",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-12 8080:9898\n",
-	}
-
-	create_request_podinfo_for_delete_2 = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-13/podinfo", "default"),
-		Name:                "my-podinfo-13",
-		TargetContext: &corev1.Context{
-			Namespace: "test-13",
-			Cluster:   KubeappsCluster,
-		},
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-	}
-
-	expected_detail_podinfo_for_delete_2 = &corev1.InstalledPackageDetail{
-		PkgVersionReference: &corev1.VersionReference{
-			Version: "=5.2.1",
-		},
-		CurrentVersion: &corev1.PackageAppVersion{
-			PkgVersion: "5.2.1",
-			AppVersion: "5.2.1",
-		},
-		Status: statusInstalled,
-		PostInstallationNotes: "1. Get the application URL by running these commands:\n  " +
-			"echo \"Visit http://127.0.0.1:8080 to use your application\"\n  " +
-			"kubectl -n @TARGET_NS@ port-forward deploy/@TARGET_NS@-my-podinfo-13 8080:9898\n",
-	}
-
-	create_request_wrong_cluster = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-14/podinfo", "default"),
-		Name:                "my-podinfo",
-		TargetContext: &corev1.Context{
-			Namespace: "test-14",
-			Cluster:   "this is not the cluster you're looking for",
-		},
-	}
-
-	create_request_target_ns_doesnt_exist = &corev1.CreateInstalledPackageRequest{
-		AvailablePackageRef: availableRef("podinfo-15/podinfo", "default"),
-		Name:                "my-podinfo",
-		TargetContext: &corev1.Context{
-			Namespace: "test-15",
-			Cluster:   KubeappsCluster,
-		},
-	}
-
-	available_package_summaries_podinfo_basic_auth = &corev1.GetAvailablePackageSummariesResponse{
-		AvailablePackageSummaries: []*corev1.AvailablePackageSummary{
-			{
-				Name:                "podinfo",
-				AvailablePackageRef: availableRef("podinfo-basic-auth/podinfo", "default"),
-				LatestVersion:       &corev1.PackageAppVersion{PkgVersion: "6.0.0", AppVersion: "6.0.0"},
-				DisplayName:         "podinfo",
-				ShortDescription:    "Podinfo Helm chart for Kubernetes",
-				Categories:          []string{""},
-			},
-		},
-	}
-
-	expected_detail_podinfo_basic_auth = &corev1.GetAvailablePackageDetailResponse{
-		AvailablePackageDetail: &corev1.AvailablePackageDetail{
-			AvailablePackageRef: availableRef("podinfo-basic-auth/podinfo", "default"),
-			Name:                "podinfo",
-			Version:             &corev1.PackageAppVersion{PkgVersion: "6.0.0", AppVersion: "6.0.0"},
-			RepoUrl:             "http://fluxv2plugin-testdata-svc.default.svc.cluster.local:80/podinfo-basic-auth",
-			HomeUrl:             "https://github.com/stefanprodan/podinfo",
-			DisplayName:         "podinfo",
-			ShortDescription:    "Podinfo Helm chart for Kubernetes",
-			SourceUrls:          []string{"https://github.com/stefanprodan/podinfo"},
-			Maintainers: []*corev1.Maintainer{
-				{Name: "stefanprodan", Email: "stefanprodan@users.noreply.github.com"},
-			},
-			Readme:        "Podinfo is used by CNCF projects like [Flux](https://github.com/fluxcd/flux2)",
-			DefaultValues: "Default values for podinfo.\n\nreplicaCount: 1\n",
-		},
-	}
-)

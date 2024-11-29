@@ -1,15 +1,17 @@
+# Copyright 2020-2022 the Kubeapps contributors.
+# SPDX-License-Identifier: Apache-2.0
+
+---
 # Number of days of inactivity before an issue becomes stale
 daysUntilStale: 15
 # Number of days of inactivity before a stale issue is closed
 daysUntilClose: 3
 # Issues with these labels will never be considered stale
 exemptLabels:
-  - priority/unbreak-now
-  - priority/high
-  - priority/medium
   - kind/bug
+  - kind/documentation
+  - kind/enhancement
   - kind/feature
-  - kind/refactor
 # Label to use when marking an issue as stale
 staleLabel: stale
 # Comment to post when marking an issue as stale. Set to `false` to deactivate

@@ -1,5 +1,8 @@
-import { LOCATION_CHANGE, RouterActionType, RouterLocation } from "connected-react-router";
-import { Location } from "history";
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import { LOCATION_CHANGE } from "hooks/push";
+import { Location } from "react-router";
 import context from "jest-plugin-context";
 import { Auth } from "shared/Auth";
 import { IConfig } from "shared/Config";
@@ -65,9 +68,7 @@ describe("clusterReducer", () => {
             clusterReducer(initialTestState, {
               type: LOCATION_CHANGE,
               payload: {
-                location: { ...location, pathname: tc.path } as RouterLocation<any>,
-                action: "PUSH" as RouterActionType,
-                isFirstRendering: true,
+                location: { ...location, pathname: tc.path },
               },
             }),
           ).toEqual({
@@ -435,14 +436,15 @@ describe("clusterReducer", () => {
     const config = {
       kubeappsCluster: "",
       kubeappsNamespace: "kubeapps",
-      globalReposNamespace: "kubeapps-global",
+      helmGlobalNamespace: "kubeapps-global",
+      carvelGlobalNamespace: "kapp-controller-packaging-global",
       appVersion: "dev",
       authProxyEnabled: false,
       oauthLoginURI: "",
       oauthLogoutURI: "",
       featureFlags: {
         operators: false,
-        ui: "hex",
+        schemaEditor: { enabled: false },
       },
       clusters: ["additionalCluster1", "additionalCluster2"],
       authProxySkipLoginPage: false,
@@ -450,6 +452,8 @@ describe("clusterReducer", () => {
       remoteComponentsUrl: "",
       customAppViews: [],
       skipAvailablePackageDetails: false,
+      createNamespaceLabels: {},
+      configuredPlugins: [],
     } as IConfig;
     it("re-writes the clusters to match the config.clusters state", () => {
       expect(

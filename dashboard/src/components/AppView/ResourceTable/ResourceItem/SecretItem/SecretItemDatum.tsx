@@ -1,9 +1,12 @@
+// Copyright 2019-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsIcon } from "@cds/react/icon";
-import Column from "components/js/Column";
-import Row from "components/js/Row";
+import Column from "components/Column";
+import Row from "components/Row";
 import React, { useEffect, useRef } from "react";
 import CopyToClipboard from "react-copy-to-clipboard";
-import ReactTooltip from "react-tooltip";
+import { Tooltip } from "react-tooltip";
 import "./SecretItemDatum.css";
 
 interface ISecretItemDatumProps {
@@ -31,7 +34,7 @@ function SecretItemDatum({ name, value }: ISecretItemDatumProps) {
       }
     };
   }, [copied]);
-  const decodedValue = atob(value);
+  const decodedValue = Buffer.from(value, "base64").toString();
 
   return (
     <Row>
@@ -65,23 +68,24 @@ function SecretItemDatum({ name, value }: ISecretItemDatumProps) {
         </button>
       </Column>
       <Column span={1}>
-        <button className="secret-datum-icon" aria-expanded={!hidden} onClick={setCopiedTrue}>
-          <div data-tip={true} data-for="app-status">
-            <CopyToClipboard text={decodedValue}>
-              <CdsIcon
-                shape="copy-to-clipboard"
-                size="md"
-                solid={true}
-                aria-label={`Copy ${name} secret value to the clipboard`}
-              />
-            </CopyToClipboard>
-          </div>
+        <button
+          className="secret-datum-icon"
+          aria-expanded={!hidden}
+          onClick={setCopiedTrue}
+          data-tooltip-id="tooltip-copied"
+        >
+          <CopyToClipboard text={decodedValue}>
+            <CdsIcon
+              shape="copy-to-clipboard"
+              size="md"
+              solid={true}
+              aria-label={`Copy ${name} secret value to the clipboard`}
+            />
+          </CopyToClipboard>
         </button>
-        <div style={{ opacity: copied ? "1" : "0" }}>
-          <ReactTooltip id="app-status" effect="solid">
-            Copied
-          </ReactTooltip>
-        </div>
+        <Tooltip isOpen={copied} id="tooltip-copied">
+          Copied
+        </Tooltip>
       </Column>
     </Row>
   );

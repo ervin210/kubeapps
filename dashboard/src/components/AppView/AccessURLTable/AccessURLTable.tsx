@@ -1,15 +1,18 @@
-import Table from "components/js/Table";
-import Tooltip from "components/js/Tooltip";
-import { get } from "lodash";
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import { CdsIcon } from "@cds/react/icon";
+import LoadingWrapper from "components/LoadingWrapper";
+import Table from "components/Table";
+import { filterByResourceRefs } from "containers/helpers";
+import { ResourceRef } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
+import { get, some } from "lodash";
 import { useSelector } from "react-redux";
-import { ResourceRef } from "gen/kubeappsapis/core/packages/v1alpha1/packages";
+import { Tooltip } from "react-tooltip";
 import { IK8sList, IKubeItem, IResource, IServiceSpec, IStoreState } from "shared/types";
-import LoadingWrapper from "../../../components/LoadingWrapper/LoadingWrapper";
-import isSomeResourceLoading from "../helpers";
 import { GetURLItemFromIngress, ShouldGenerateLink } from "./AccessURLItem/AccessURLIngressHelper";
 import { GetURLItemFromService } from "./AccessURLItem/AccessURLServiceHelper";
 import "./AccessURLTable.css";
-import { filterByResourceRefs } from "containers/helpers";
 
 interface IAccessURLTableProps {
   ingressRefs: ResourceRef[];
@@ -100,13 +103,13 @@ function getNotes(resource?: IResource) {
   return (
     <span className="tooltip-wrapper">
       Not associated with any IP.{" "}
+      <span data-tooltip-id={`${resource.metadata.name}-pending-tooltip`}>
+        <CdsIcon shape="help" size="sm" solid={true} />
+      </span>
       <Tooltip
-        label="pending-tooltip"
         id={`${resource.metadata.name}-pending-tooltip`}
-        icon="help"
-        position="bottom-left"
-        large={true}
-        iconProps={{ solid: true, size: "sm" }}
+        place="bottom-end"
+        className="multiline-tooltip"
       >
         Depending on your cloud provider of choice, it may take some time for an access URL to be
         available for the application and the Service will stay in a "Pending" state until a URL is
@@ -125,7 +128,7 @@ export default function AccessURLTable({ ingressRefs, serviceRefs }: IAccessURLT
     filterByResourceRefs(serviceRefs, state.kube.items),
   ) as Array<IKubeItem<IResource>>;
 
-  if (isSomeResourceLoading(ingresses.concat(services))) {
+  if (some(ingresses.concat(services), r => r.isFetching)) {
     return (
       <section aria-labelledby="access-urls-title">
         <h5 className="section-title" id="access-urls-title">

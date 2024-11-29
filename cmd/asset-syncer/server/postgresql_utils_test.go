@@ -1,18 +1,5 @@
-/*
-Copyright 2021 VMware. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2024 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 package server
 
@@ -23,8 +10,8 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/kubeapps/kubeapps/pkg/chart/models"
-	"github.com/kubeapps/kubeapps/pkg/dbutils"
+	"github.com/vmware-tanzu/kubeapps/pkg/chart/models"
+	"github.com/vmware-tanzu/kubeapps/pkg/dbutils"
 )
 
 func getMockManager(t *testing.T) (*postgresAssetManager, sqlmock.Sqlmock, func()) {
@@ -42,7 +29,7 @@ func Test_DeletePGRepo(t *testing.T) {
 	pgManager, mock, cleanup := getMockManager(t)
 	defer cleanup()
 
-	repo := models.Repo{Name: "testrepo", Namespace: "testnamespace"}
+	repo := models.AppRepository{Name: "testrepo", Namespace: "testnamespace"}
 	mock.ExpectQuery(`DELETE FROM repos WHERE name = \$1 AND namespace = \$2`).
 		WithArgs(repo.Name, repo.Namespace).
 		WillReturnRows(sqlmock.NewRows([]string{"ID"}).AddRow(1))
@@ -61,7 +48,7 @@ func Test_PGRepoLastChecksum(t *testing.T) {
 		WithArgs("foo", "repo-namespace").
 		WillReturnRows(sqlmock.NewRows([]string{"checksum"}).AddRow("123"))
 
-	got := pgManager.LastChecksum(models.Repo{Namespace: "repo-namespace", Name: "foo"})
+	got := pgManager.LastChecksum(models.AppRepository{Namespace: "repo-namespace", Name: "foo"})
 	if got != "123" {
 		t.Errorf("got: %s, want: %s", got, "123")
 	}
@@ -92,13 +79,12 @@ func Test_PGremoveMissingCharts(t *testing.T) {
 	pgManager, mock, cleanup := getMockManager(t)
 	defer cleanup()
 
-	repo := models.Repo{Name: "repo"}
-	charts := []models.Chart{{ID: "foo", Repo: &repo}, {ID: "bar"}}
-	mock.ExpectQuery(`^DELETE FROM charts WHERE chart_id NOT IN \('foo', 'bar'\) AND repo_name = \$1 AND repo_namespace = \$2`).
+	repo := models.AppRepository{Name: "repo"}
+	mock.ExpectQuery(`^DELETE FROM charts WHERE info->>'name' IN \('foo', 'bar'\) AND repo_name = \$1 AND repo_namespace = \$2`).
 		WithArgs(repo.Name, repo.Namespace).
 		WillReturnRows(sqlmock.NewRows([]string{"ID"}).AddRow(1).AddRow(2))
 
-	err := pgManager.removeMissingCharts(repo, charts)
+	err := pgManager.RemoveMissingCharts(repo, []string{"foo", "bar"})
 	if err != nil {
 		t.Errorf("%+v", err)
 	}
@@ -116,7 +102,7 @@ func Test_PGupdateIcon(t *testing.T) {
 			WithArgs("stable/wordpress", "repo-namespace", "repo-name").
 			WillReturnRows(sqlmock.NewRows([]string{"ID"}).AddRow(1))
 
-		err := pgManager.updateIcon(models.Repo{Namespace: "repo-namespace", Name: "repo-name"}, data, contentType, id)
+		err := pgManager.updateIcon(models.AppRepository{Namespace: "repo-namespace", Name: "repo-name"}, data, contentType, id)
 
 		if err != nil {
 			t.Errorf("%+v", err)
@@ -130,7 +116,7 @@ func Test_PGupdateIcon(t *testing.T) {
 			WithArgs("stable/wordpress", "repo-namespace", "repo-name").
 			WillReturnRows(sqlmock.NewRows([]string{"ID"}))
 
-		err := pgManager.updateIcon(models.Repo{Namespace: "repo-namespace", Name: "repo-name"}, data, contentType, id)
+		err := pgManager.updateIcon(models.AppRepository{Namespace: "repo-namespace", Name: "repo-name"}, data, contentType, id)
 
 		if got, want := err, sql.ErrNoRows; got != want {
 			t.Errorf("got: %+v, want: %+v", got, want)
@@ -144,7 +130,7 @@ func Test_PGupdateIcon(t *testing.T) {
 			WithArgs("stable/wordpress", "repo-namespace", "repo-name").
 			WillReturnRows(sqlmock.NewRows([]string{"ID"}).AddRow(1).AddRow(2))
 
-		err := pgManager.updateIcon(models.Repo{Namespace: "repo-namespace", Name: "repo-name"}, data, contentType, id)
+		err := pgManager.updateIcon(models.AppRepository{Namespace: "repo-namespace", Name: "repo-name"}, data, contentType, id)
 
 		if got, want := errors.Is(err, ErrMultipleRows), true; got != want {
 			t.Errorf("got: %t, want: %t", got, want)
@@ -160,7 +146,7 @@ func Test_PGfilesExist(t *testing.T) {
 		id     = "stable/wordpress"
 		digest = "foo"
 	)
-	repo := models.Repo{Namespace: "namespace", Name: "repo-name"}
+	repo := models.AppRepository{Namespace: "namespace", Name: "repo-name"}
 
 	rows := sqlmock.NewRows([]string{"info"}).AddRow(`true`)
 	mock.ExpectQuery(`^SELECT EXISTS\(
@@ -186,9 +172,9 @@ func Test_PGinsertFiles(t *testing.T) {
 		namespace        = "my-namespace"
 		repoName         = "my-repo"
 		chartID   string = repoName + "/wordpress"
-		filesID   string = chartID + "-2.1.3"
+		filesID          = chartID + "-2.1.3"
 	)
-	files := models.ChartFiles{ID: filesID, Readme: "foo", Values: "bar", Repo: &models.Repo{Namespace: namespace, Name: repoName}}
+	files := models.ChartFiles{ID: filesID, Readme: "foo", DefaultValues: "bar", Repo: &models.AppRepository{Namespace: namespace, Name: repoName}}
 	mock.ExpectQuery(`INSERT INTO files \(chart_id, repo_name, repo_namespace, chart_files_ID, info\)*`).
 		WithArgs(chartID, repoName, namespace, filesID, files).
 		WillReturnRows(sqlmock.NewRows([]string{"ID"}).AddRow("3"))

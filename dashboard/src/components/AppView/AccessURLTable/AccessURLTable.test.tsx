@@ -1,7 +1,10 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import LoadingWrapper from "components/LoadingWrapper/LoadingWrapper";
+import { ResourceRef } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 import context from "jest-plugin-context";
 import { keyForResourceRef } from "shared/ResourceRef";
-import { ResourceRef } from "gen/kubeappsapis/core/packages/v1alpha1/packages";
 import { defaultStore, getStore, mountWrapper } from "shared/specs/mountWrapper";
 import { IIngressSpec, IResource, IServiceSpec, IServiceStatus } from "shared/types";
 import AccessURLTable from "./AccessURLTable";

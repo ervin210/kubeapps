@@ -1,144 +1,186 @@
-import { IAppRepository } from "shared/types";
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import {
+  PackageRepositoriesPermissions,
+  PackageRepositoryDetail,
+  PackageRepositorySummary,
+} from "gen/kubeappsapis/core/packages/v1alpha1/repositories_pb";
 import { getType } from "typesafe-actions";
 import actions from "../actions";
-import reposReducer, { IAppRepositoryState } from "./repos";
+import reposReducer, { IPackageRepositoryState } from "./repos";
+import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins_pb";
+import { PluginNames } from "shared/types";
+import { Context } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 
 describe("reposReducer", () => {
-  let initialState: IAppRepositoryState;
+  let initialState: IPackageRepositoryState;
 
   beforeEach(() => {
     initialState = {
-      addingRepo: false,
       errors: {},
-      form: {
-        name: "",
-        namespace: "",
-        show: false,
-        url: "",
-      },
       isFetching: false,
-      isFetchingElem: {
-        repositories: false,
-        secrets: false,
-      },
-      validating: false,
-      repo: {} as IAppRepository,
-      repos: [],
-      imagePullSecrets: [],
-    };
+      repoDetail: {} as PackageRepositoryDetail,
+      reposSummaries: [] as PackageRepositorySummary[],
+      reposPermissions: [] as PackageRepositoriesPermissions[],
+    } as IPackageRepositoryState;
   });
 
   describe("repos", () => {
     const actionTypes = {
-      addRepo: getType(actions.repos.addRepo),
+      addOrUpdateRepo: getType(actions.repos.addOrUpdateRepo),
       addedRepo: getType(actions.repos.addedRepo),
-      requestRepoUpdate: getType(actions.repos.requestRepoUpdate),
-      repoUpdated: getType(actions.repos.repoUpdated),
-      requestRepos: getType(actions.repos.requestRepos),
-      receiveRepos: getType(actions.repos.receiveRepos),
-      requestRepo: getType(actions.repos.requestRepo),
-      receiveRepo: getType(actions.repos.receiveRepo),
-      repoValidating: getType(actions.repos.repoValidating),
-      repoValidated: getType(actions.repos.repoValidated),
-      redirect: getType(actions.repos.redirect),
-      redirected: getType(actions.repos.redirected),
       errorRepos: getType(actions.repos.errorRepos),
-      createImagePullSecret: getType(actions.repos.createImagePullSecret),
+      receiveRepo: getType(actions.repos.receiveRepoDetail),
+      receiveRepos: getType(actions.repos.receiveRepoSummaries),
+      repoUpdated: getType(actions.repos.repoUpdated),
+      requestRepo: getType(actions.repos.requestRepoDetail),
+      requestRepos: getType(actions.repos.requestRepoSummaries),
+      requestReposPermissions: getType(actions.repos.requestReposPermissions),
+      receiveReposPermissions: getType(actions.repos.receiveReposPermissions),
     };
 
     describe("reducer actions", () => {
       it("sets isFetching when requesting repos", () => {
         expect(
           reposReducer(undefined, {
-            type: actionTypes.requestRepos as any,
+            type: actionTypes.requestRepos,
+            payload: "",
           }),
         ).toEqual({
           ...initialState,
           isFetching: true,
-          isFetchingElem: { repositories: true, secrets: false },
         });
       });
 
       it("unsets isFetching and receive repos", () => {
-        const repo = { metadata: { name: "foo" } };
+        const repoSummary = { name: "foo" } as PackageRepositorySummary;
         const state = reposReducer(undefined, {
-          type: actionTypes.requestRepos as any,
+          type: actionTypes.requestRepos,
+          payload: "",
         });
         expect(state).toEqual({
           ...initialState,
           isFetching: true,
-          isFetchingElem: { repositories: true, secrets: false },
         });
         expect(
           reposReducer(state, {
-            type: actionTypes.receiveRepos as any,
-            payload: [repo],
+            type: actionTypes.receiveRepos,
+            payload: [repoSummary],
           }),
-        ).toEqual({ ...initialState, repos: [repo] });
+        ).toEqual({ ...initialState, reposSummaries: [repoSummary] } as IPackageRepositoryState);
       });
 
       it("unsets isFetching and receive repo", () => {
-        const repo = { metadata: { name: "foo" } };
+        const repoDetail = new PackageRepositoryDetail({ name: "foo" });
         const state = reposReducer(undefined, {
-          type: actionTypes.requestRepos as any,
+          type: actionTypes.requestRepos,
+          payload: "",
         });
         expect(state).toEqual({
           ...initialState,
           isFetching: true,
-          isFetchingElem: { repositories: true, secrets: false },
         });
         expect(
           reposReducer(state, {
-            type: actionTypes.receiveRepo as any,
-            payload: repo,
+            type: actionTypes.receiveRepo,
+            payload: repoDetail,
           }),
-        ).toEqual({ ...initialState, repo });
+        ).toEqual({ ...initialState, repoDetail: repoDetail } as IPackageRepositoryState);
       });
     });
 
     it("adds a repo", () => {
-      const repo = { metadata: { name: "foo" } };
+      const repoSummary = { name: "foo" } as PackageRepositorySummary;
       const state = reposReducer(undefined, {
-        type: actionTypes.addRepo as any,
+        type: actionTypes.addOrUpdateRepo,
       });
       expect(state).toEqual({
         ...initialState,
-        addingRepo: true,
+        isFetching: true,
       });
       expect(
-        reposReducer(state, {
-          type: actionTypes.addedRepo as any,
-          payload: repo,
+        reposReducer(initialState, {
+          type: actionTypes.addedRepo,
+          payload: repoSummary,
         }),
-      ).toEqual({ ...initialState, lastAdded: repo, repos: [repo] });
+      ).toEqual({ ...initialState, reposSummaries: [repoSummary] } as IPackageRepositoryState);
+    });
+
+    it("adds a repo sorting the result", () => {
+      const repoSummary1 = { name: "zzz" } as PackageRepositorySummary;
+      const repoSummary2 = { name: "aaa" } as PackageRepositorySummary;
+      const state = { ...initialState, reposSummaries: [repoSummary1] } as IPackageRepositoryState;
+
+      expect(
+        reposReducer(state, {
+          type: actionTypes.addedRepo,
+          payload: repoSummary2,
+        }),
+      ).toEqual({
+        ...initialState,
+        reposSummaries: [repoSummary2, repoSummary1],
+      } as IPackageRepositoryState);
     });
 
     it("updates a repo", () => {
-      const repo = { metadata: { name: "foo" } } as any;
+      const repoSummary = new PackageRepositorySummary({
+        name: "foo",
+        url: "foo",
+        packageRepoRef: { context: { namespace: "ns" } },
+      });
       expect(
         reposReducer(
-          { ...initialState, repos: [repo] },
+          { ...initialState, reposSummaries: [repoSummary] },
           {
-            type: actionTypes.repoUpdated as any,
-            payload: { ...repo, spec: { a: "b" } },
+            type: actionTypes.repoUpdated,
+            payload: new PackageRepositorySummary({ ...repoSummary, url: "bar" }),
           },
         ),
-      ).toEqual({ ...initialState, repos: [{ ...repo, spec: { a: "b" } }] });
+      ).toEqual({
+        ...initialState,
+        reposSummaries: [{ ...repoSummary, url: "bar" }],
+      } as IPackageRepositoryState);
     });
 
-    it("validates a repo", () => {
+    it("unsets isFetching and receive repos permissions", () => {
+      const plugin = { name: PluginNames.PACKAGES_HELM, version: "0.0.1" } as Plugin;
+      const reposPermissions = [
+        new PackageRepositoriesPermissions({
+          plugin: plugin,
+          global: {
+            create: true,
+            delete: true,
+            list: true,
+            update: true,
+          },
+          namespace: {
+            create: true,
+            delete: true,
+            list: true,
+            update: true,
+          },
+        }),
+      ] as PackageRepositoriesPermissions[];
       const state = reposReducer(undefined, {
-        type: actionTypes.repoValidating as any,
+        type: actionTypes.requestReposPermissions,
+        payload: { cluster: "", namespace: "" } as Context,
       });
       expect(state).toEqual({
         ...initialState,
-        validating: true,
+        reposPermissions: [],
+        isFetching: true,
       });
       expect(
         reposReducer(state, {
-          type: actionTypes.repoValidated as any,
+          type: actionTypes.receiveReposPermissions,
+          payload: reposPermissions,
         }),
-      ).toEqual({ ...initialState });
+      ).toEqual({
+        ...initialState,
+        reposPermissions: reposPermissions,
+        isFetching: false,
+      } as IPackageRepositoryState);
     });
   });
 });

@@ -1,9 +1,12 @@
-import { LocationChangeAction, LOCATION_CHANGE } from "connected-react-router";
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { IKubeState } from "shared/types";
 import { Kube } from "shared/Kube";
 import { getType } from "typesafe-actions";
 import actions from "../actions";
 import { KubeAction } from "../actions/kube";
+import { LOCATION_CHANGE, PushAction } from "hooks/push";
 
 export const initialKinds = {
   // In case it's not possible to retrieve the api groups (e.g. with lacking permissions)
@@ -42,7 +45,7 @@ export const initialKinds = {
     plural: "horizontalpodautoscalers",
     namespaced: true,
   },
-  Ingress: { apiVersion: "extensions/v1beta1", plural: "ingresses", namespaced: true },
+  Ingress: { apiVersion: "extensions/v1", plural: "ingresses", namespaced: true },
   Job: { apiVersion: "batch/v1", plural: "jobs", namespaced: true },
   Lease: { apiVersion: "coordination.k8s.io/v1", plural: "leases", namespaced: true },
   LimitRange: { apiVersion: "v1", plural: "limitranges", namespaced: true },
@@ -121,16 +124,11 @@ export const initialKinds = {
 export const initialState: IKubeState = {
   items: {},
   kinds: initialKinds,
-  // We book keep on subscriptions, keyed by the installed package ref,
-  // so that we can unsubscribe when the closeRequestResources action is
-  // dispatched (usually because the component is unmounted when the user
-  // navigates away).
-  subscriptions: {},
 };
 
 const kubeReducer = (
   state: IKubeState = initialState,
-  action: KubeAction | LocationChangeAction,
+  action: KubeAction | PushAction,
 ): IKubeState => {
   switch (action.type) {
     case getType(actions.kube.receiveResource): {
@@ -150,47 +148,16 @@ const kubeReducer = (
       return { ...state, items: { ...state.items, ...erroredItem } };
     }
     case getType(actions.kube.requestResources): {
-      const { pkg, refs, handler, watch, onError, onComplete } = action.payload;
-      const observable = Kube.getResources(pkg, refs, watch);
-      const subscription = observable.subscribe({
-        next(r) {
-          handler(r);
-        },
-        error(e) {
-          onError(e);
-        },
-        complete() {
-          onComplete();
-        },
-      });
-      // We only record the subscription if watching the result, since otherwise
-      // the call is terminated by the server automatically once results are
-      // returned and we don't need any book-keeping.
-      if (watch) {
-        const key = `${pkg.context?.cluster}/${pkg.context?.namespace}/${pkg.identifier}`;
-        return {
-          ...state,
-          subscriptions: {
-            ...state.subscriptions,
-            [key]: subscription,
-          },
-        };
-      }
-      return state;
-    }
-    case getType(actions.kube.closeRequestResources): {
-      const pkg = action.payload;
-      const key = `${pkg.context?.cluster}/${pkg.context?.namespace}/${pkg.identifier}`;
-      const { subscriptions } = state;
-      const { [key]: foundSubscription, ...otherSubscriptions } = subscriptions;
-      // unsubscribe if it exists
-      if (foundSubscription !== undefined) {
-        foundSubscription.unsubscribe();
-      }
-      return {
-        ...state,
-        subscriptions: otherSubscriptions,
+      const { pkg, refs, handler, watch } = action.payload;
+      const asyncResponses = Kube.getResources(pkg, refs, watch);
+      const processResponses = async () => {
+        for await (const response of asyncResponses) {
+          handler(response);
+        }
       };
+      processResponses();
+
+      return state;
     }
     case LOCATION_CHANGE:
       return { ...state, items: {} };

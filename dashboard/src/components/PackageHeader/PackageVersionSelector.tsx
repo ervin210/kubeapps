@@ -1,6 +1,9 @@
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsControlMessage } from "@cds/react/forms";
 import { CdsSelect } from "@cds/react/select";
-import { PackageAppVersion } from "gen/kubeappsapis/core/packages/v1alpha1/packages";
+import { PackageAppVersion } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 import React from "react";
 interface IPackageVersionSelectorProps {
   versions: PackageAppVersion[];

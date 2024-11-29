@@ -1,20 +1,9 @@
 #!/usr/bin/env bash
-#
-# Test functions Library
 
-# Copyright 2018-2021 VMware. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright 2018-2022 the Kubeapps contributors.
+# SPDX-License-Identifier: Apache-2.0
+
+# Test functions Library
 
 # Load Generic Libraries
 # shellcheck disable=SC1090
@@ -52,6 +41,17 @@ k8s_wait_for_deployment() {
     done
     if [ $retries == 0 ]; then
         info "Error while rolling out deployment ${deployment} in ns ${namespace}"
+        # these are all attempts to shed some light on why the deployment might have failed to roll out
+        kubectl describe deployment --namespace "${namespace}" "${deployment}"
+        local rset=$(kubectl get replicaset --namespace "${namespace}" | grep "${deployment}")
+        if [[ "$rset" != "" ]]; then
+            kubectl describe replicaset ${deployment} --namespace "${namespace}"
+        fi
+        kubectl get pods --namespace "${namespace}"
+        local pod=$(kubectl get pods --namespace "${namespace}" | grep ${deployment} | awk '{print $1}' | head -n 1)
+        if [[ "$pod" != "" ]]; then
+            kubectl describe pod $pod --namespace "${namespace}"
+        fi
         exit 1
     fi
     return $exit_code

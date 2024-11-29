@@ -1,13 +1,16 @@
-import { deepClone } from "@cds/core/internal/utils/identity";
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import { deepClone } from "@cds/core/internal";
 import { CdsButton } from "@cds/react/button";
 import actions from "actions";
 import * as ReactRedux from "react-redux";
-import { app } from "shared/url";
 import { Link } from "react-router-dom";
 import { IClustersState } from "reducers/cluster";
 import { SupportedThemes } from "shared/Config";
 import { defaultStore, getStore, initialState, mountWrapper } from "shared/specs/mountWrapper";
 import { IStoreState } from "shared/types";
+import { app } from "shared/url";
 import Menu from "./Menu";
 
 const defaultProps = {
@@ -40,7 +43,7 @@ afterEach(() => {
 
 it("opens the dropdown full menu", () => {
   const state = deepClone(initialState) as IStoreState;
-  state.config.featureFlags = { operators: true };
+  state.config.featureFlags = { ...initialState.config.featureFlags, operators: true };
   const store = getStore(state);
   const wrapper = mountWrapper(store, <Menu {...defaultProps} />);
   expect(wrapper.find(".dropdown")).not.toHaveClassName("open");
@@ -48,17 +51,17 @@ it("opens the dropdown full menu", () => {
   menu.simulate("click");
   wrapper.update();
   expect(wrapper.find(".dropdown")).toHaveClassName("open");
-  // It render links for AppRepositories and operators
+  // It render links for PackageRepositories and operators
   const links = wrapper.find(Link);
   expect(links).toHaveLength(3);
-  expect(links.get(0).props.to).toEqual(app.config.apprepositories("default", "default"));
+  expect(links.get(0).props.to).toEqual(app.config.pkgrepositories("default", "default"));
   expect(links.get(1).props.to).toEqual(app.config.operators("default", "default"));
   expect(links.get(2).props.to).toEqual("/docs");
 });
 
 it("opens the dropdown menu without operators item", () => {
   const state = deepClone(initialState) as IStoreState;
-  state.config.featureFlags = { operators: false };
+  state.config.featureFlags = { ...initialState.config.featureFlags, operators: false };
   const store = getStore(state);
   const wrapper = mountWrapper(store, <Menu {...defaultProps} />);
   expect(wrapper.find(".dropdown")).not.toHaveClassName("open");
@@ -66,10 +69,10 @@ it("opens the dropdown menu without operators item", () => {
   menu.simulate("click");
   wrapper.update();
   expect(wrapper.find(".dropdown")).toHaveClassName("open");
-  // It render links for AppRepositories and operators
+  // It render links for PackageRepositories and operators
   const links = wrapper.find(Link);
   expect(links).toHaveLength(2);
-  expect(links.get(0).props.to).toEqual(app.config.apprepositories("default", "default"));
+  expect(links.get(0).props.to).toEqual(app.config.pkgrepositories("default", "default"));
   expect(links.get(1).props.to).toEqual("/docs");
 });
 
@@ -91,7 +94,7 @@ describe("theme switcher toggle", () => {
 
   it("toggle checked if dark theme is configured", () => {
     const wrapper = mountWrapper(
-      getStore({ config: { theme: SupportedThemes.dark } }),
+      getStore({ config: { theme: SupportedThemes.dark } } as Partial<IStoreState>),
       <Menu {...defaultProps} />,
     );
     const toggle = wrapper.find("cds-toggle input");

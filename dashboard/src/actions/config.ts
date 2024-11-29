@@ -1,3 +1,6 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { ThunkAction } from "redux-thunk";
 import Config, { IConfig, SupportedThemes } from "shared/Config";
 import { IStoreState } from "shared/types";
@@ -17,14 +20,15 @@ export const errorConfig = createAction("ERROR_CONFIG", resolve => {
 });
 
 const allActions = [requestConfig, receiveConfig, receiveTheme, errorConfig];
-export type ConfigAction = ActionType<typeof allActions[number]>;
+export type ConfigAction = ActionType<(typeof allActions)[number]>;
 
 export function getConfig(): ThunkAction<Promise<void>, IStoreState, null, ConfigAction> {
   return async dispatch => {
     dispatch(requestConfig());
     try {
       const config = await Config.getConfig();
-      dispatch(receiveConfig(config));
+      const configuredPlugins = await Config.getConfiguredPlugins();
+      dispatch(receiveConfig({ ...config, configuredPlugins }));
     } catch (e: any) {
       dispatch(errorConfig(e));
     }

@@ -1,6 +1,9 @@
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 syntax = "proto3";
 package kubeappsapis.core.packages.v1alpha1;
-option go_package = "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1";
+option go_package = "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1";
 
 import "google/api/annotations.proto";
 import "google/protobuf/any.proto";
@@ -20,14 +23,19 @@ service PackagesService {
    }
   rpc GetAvailablePackageDetail(GetAvailablePackageDetailRequest) returns (GetAvailablePackageDetailResponse) {
     option (google.api.http) = {
-      get: "/core/packages/v1alpha1/availablepackages/plugin/{available_package_ref.plugin.name}/{available_package_ref.plugin.version}/c/{available_package_ref.context.cluster}/ns/{available_package_ref.context.namespace}/{available_package_ref.identifier}"
+      get: "/core/packages/v1alpha1/availablepackages/plugin/{available_package_ref.plugin.name}/{available_package_ref.plugin.version}/c/{available_package_ref.context.cluster}/ns/{available_package_ref.context.namespace}/{available_package_ref.identifier=**}"
     };
   }
   rpc GetAvailablePackageVersions(GetAvailablePackageVersionsRequest) returns (GetAvailablePackageVersionsResponse) {
     option (google.api.http) = {
-      get: "/core/packages/v1alpha1/availablepackages/plugin/{available_package_ref.plugin.name}/{available_package_ref.plugin.version}/c/{available_package_ref.context.cluster}/ns/{available_package_ref.context.namespace}/{available_package_ref.identifier}/versions"
+      get: "/core/packages/v1alpha1/availablepackages/plugin/{available_package_ref.plugin.name}/{available_package_ref.plugin.version}/c/{available_package_ref.context.cluster}/ns/{available_package_ref.context.namespace}/{available_package_ref.identifier=**}/versions"
     };
   }
+  rpc GetAvailablePackageMetadatas(GetAvailablePackageMetadatasRequest) returns (GetAvailablePackageMetadatasResponse) {
+    option (google.api.http) = {
+      get: "/core/packages/v1alpha1/availablepackages/plugin/{available_package_ref.plugin.name}/{available_package_ref.plugin.version}/c/{available_package_ref.context.cluster}/ns/{available_package_ref.context.namespace}/{available_package_ref.identifier=**}/metadata"
+     };
+   }
 
   rpc GetInstalledPackageSummaries(GetInstalledPackageSummariesRequest) returns (GetInstalledPackageSummariesResponse) {
     option (google.api.http) = {
@@ -116,6 +124,22 @@ message GetAvailablePackageVersionsRequest {
   string pkg_version = 2;
 }
 
+// GetAvailablePackageMetadatasRequest
+//
+// Request for GetAvailablePackageMetadatas
+message GetAvailablePackageMetadatasRequest {
+  // Available Package Reference
+  //
+  // Identifies the available package for which we are requesting
+  // the metadata.
+  AvailablePackageReference available_package_ref = 1;
+
+  // Package Version
+  //
+  // Version reference for which metadata is requested.
+  string pkg_version = 2;
+}
+
 // GetInstalledPackageSummariesRequest
 //
 // Request for GetInstalledPackageSummaries
@@ -169,7 +193,7 @@ message CreateInstalledPackageRequest {
 // Request for UpdateInstalledPackage. The intent is to reach the desired state specified
 // by the fields in the request, while leaving other fields intact. This is a whole
 // object "Update" semantics rather than "Patch" semantics. The caller will provide the
-// values for the fields below, which will replace, or be overlayed onto, the
+// values for the fields below, which will replace, or be overlaid onto, the
 // corresponding fields in the existing resource. For example, with the
 // UpdateInstalledPackageRequest, it is not possible to change just the 'package version
 // reference' without also specifying 'values' field. As a side effect, not specifying the
@@ -289,6 +313,25 @@ message GetAvailablePackageVersionsResponse {
   // If a version_query is present and the plugin chooses to support it,
   // the full history of versions matching the version query should be returned.
   repeated PackageAppVersion package_app_versions = 1;
+}
+
+// GetAvailablePackageMetadatasResponse
+//
+// Response for GetAvailablePackageMetadatas
+message GetAvailablePackageMetadatasResponse {
+  // Available Package Reference
+  //
+  // The reference to the available package related to this metadata.
+  AvailablePackageReference available_package_ref = 1;
+
+  // NOTE: May also need the repository reference, for required
+  // secrets? Or rely on existing matching of repo to available package
+  // (currently used for updates).
+
+  // Package Metadata
+  //
+  // A list of metadata associated with this available package.
+  repeated PackageMetadata package_metadata = 2;
 }
 
 // GetInstalledPackageSummariesResponse
@@ -439,7 +482,7 @@ message AvailablePackageDetail {
   // the url of the package repository that contains this package
   string repo_url = 4;
 
-  // the url of the “home” for the package
+  // the url of the "home" for the package
   string home_url = 5;
 
   // Available package icon URL
@@ -472,6 +515,12 @@ message AvailablePackageDetail {
   // An example of default values used during package templating that can serve
   // as documentation or a starting point for user customization.
   string default_values = 11;
+
+  // Available package additional default values
+  //
+  // A package may contain additional default value files for specific scenarios,
+  // such as values_production.yaml or values_dev.yaml
+  map<string, string> additional_default_values = 17;
 
   // Available package values schema
   //
@@ -830,7 +879,7 @@ message VersionReference {
   // Version
   //
   // The format of the version constraint depends on the backend. For example,
-  // for a flux v2 and Carvel it’s a semver expression, such as ">=10.3 < 10.4"
+  // for a flux v2 and Carvel it's a semver expression, such as ">=10.3 < 10.4"
   string version = 1;
 }
 
@@ -875,8 +924,8 @@ message InstalledPackageStatus {
 message ReconciliationOptions {
   // Reconciliation Interval
   //
-  // The interval with which the package is checked for reconciliation (in seconds)
-  int32 interval = 1;
+  // The interval with which the package is checked for reconciliation (in time+unit)
+  string interval = 1;
 
   // Suspend
   //
@@ -906,6 +955,42 @@ message PackageAppVersion {
   // Version of the packaged application
   string app_version = 2;
 };
+
+// Package Metadata
+//
+// PackageMetadata contains info to display and fetch SBOMs, scan results
+// and other linked package metadata.
+message PackageMetadata {
+  // Media type
+  //
+  // Media type of this metadata
+  string media_type = 1;
+
+  // Artifact type
+  //
+  // Artifact type of this metadata
+  string artifact_type = 2;
+
+  // Digest
+  //
+  // Digest of this metadata
+  string digest = 3;
+
+  // Name
+  //
+  // Human readable name for this metadata.
+  string name = 4;
+
+  // Description
+  //
+  // Human readable description for this metadata.
+  string description = 5;
+
+  // URL
+  //
+  // The url reference for this metadata.
+  string url = 6;
+}
 
 // Resource reference
 //

@@ -1,6 +1,9 @@
+// Copyright 2021-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import * as url from "shared/url";
-import { getPluginIcon, getPluginName, PluginNames, trimDescription } from "shared/utils";
-import placeholder from "../../placeholder.png";
+import { getPluginIcon, getPluginName, trimDescription } from "shared/utils";
+import placeholder from "icons/placeholder.svg";
 import InfoCard from "../InfoCard/InfoCard";
 import { IPackageCatalogItem } from "./CatalogItem";
 
@@ -8,7 +11,7 @@ export default function PackageCatalogItem(props: IPackageCatalogItem) {
   const { cluster, namespace, availablePackageSummary } = props;
 
   // Use the current cluster/namespace in the URL (passed as props here),
-  // but, if it is global a "global" segement will be included in the generated URL.
+  // but, if it is global a "global" segment will be included in the generated URL.
   const packageViewLink = url.app.packages.get(
     cluster,
     namespace,
@@ -19,16 +22,10 @@ export default function PackageCatalogItem(props: IPackageCatalogItem) {
   const pkgPluginName = getPluginName(availablePackageSummary.availablePackageRef?.plugin);
 
   // Get the pkg repository for the plugins that have one.
-  switch (availablePackageSummary.availablePackageRef?.plugin?.name) {
-    case PluginNames.PACKAGES_HELM:
-      pkgRepository = availablePackageSummary.availablePackageRef?.identifier.split("/")[0];
-      break;
-    case PluginNames.PACKAGES_FLUX:
-      // TODO: get repo from flux
-      break;
-    case PluginNames.PACKAGES_KAPP:
-      // TODO: get repo from kapp-controller
-      break;
+  // Assuming an identifier will always be like: "repo/pkgName"
+  const splitIdentifier = availablePackageSummary.availablePackageRef?.identifier.split("/");
+  if (splitIdentifier && splitIdentifier?.length > 1) {
+    pkgRepository = splitIdentifier[0];
   }
 
   return (
