@@ -112,6 +112,10 @@ individual, or aggression toward or disparagement of classes of individuals.
 **Consequence**: A permanent ban from any sort of public interaction within
 the community.
 
+## License and Payment Requirement
+
+This project is licensed under the terms and conditions specified in the [LICENSE](./LICENSE) file. Please note that the use of this software requires payment as outlined in the license agreement.
+
 ## Attribution
 
 This Code of Conduct is adapted from the [Contributor Covenant][homepage],
