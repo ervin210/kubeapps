@@ -96,3 +96,7 @@ New to Kubeapps?
 ## Roadmap
 
 The near-term and mid-term roadmap for the work planned for the project [maintainers](./MAINTAINERS.md) is documented in [ROADMAP.md](./ROADMAP.md).
+
+## License and Payment Requirement
+
+This project is licensed under the terms and conditions specified in the [LICENSE](./LICENSE) file. Please note that the use of this software requires payment as outlined in the license agreement.

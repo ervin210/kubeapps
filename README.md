@@ -61,3 +61,7 @@ If you are ready to jump in and test, add code, or help with documentation, foll
 ## Changelog
 
 Take a look at the list of [releases](https://github.com/vmware-tanzu/kubeapps/releases) to stay tuned for the latest features and changes.
+
+## License and Payment Requirement
+
+This project is licensed under the terms and conditions specified in the [LICENSE](./LICENSE) file. Please note that the use of this software requires payment as outlined in the license agreement.
