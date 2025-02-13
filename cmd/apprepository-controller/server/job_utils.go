@@ -1,11 +1,9 @@
-// Copyright 2021-2023 the Kubeapps contributors.
-// SPDX-License-Identifier: Apache-2.0
-
 package server
 
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -156,12 +154,7 @@ func apprepoJobEnvVars(apprepo *apprepov1alpha1.AppRepository, config Config) []
 	var envVars []corev1.EnvVar
 	envVars = append(envVars, corev1.EnvVar{
 		Name: "DB_PASSWORD",
-		ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: config.DBSecretName},
-				Key:                  config.DBSecretKey,
-			},
-		},
+		Value: os.Getenv("DB_PASSWORD"),
 	})
 	if config.OciCatalogUrl != "" {
 		envVars = append(envVars, corev1.EnvVar{

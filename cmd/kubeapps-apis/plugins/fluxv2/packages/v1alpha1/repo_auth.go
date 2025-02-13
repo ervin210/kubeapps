@@ -1,6 +1,3 @@
-// Copyright 2021-2024 the Kubeapps contributors.
-// SPDX-License-Identifier: Apache-2.0
-
 package main
 
 import (
@@ -8,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/bufbuild/connect-go"
 	sourcev1beta2 "github.com/fluxcd/source-controller/api/v1beta2"
