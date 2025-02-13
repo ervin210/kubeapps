@@ -1,11 +1,9 @@
-// Copyright 2017-2022 the Kubeapps contributors.
-// SPDX-License-Identifier: Apache-2.0
-
 package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"os"
 )
 
 // +genclient

@@ -1,6 +1,3 @@
-// Copyright 2021-2022 the Kubeapps contributors.
-// SPDX-License-Identifier: Apache-2.0
-
 package cmd
 
 import (
@@ -112,6 +109,9 @@ func init() {
 
 	// Enrich the config object with environmental information
 	serveOpts.DatabasePassword = os.Getenv("DB_PASSWORD")
+	serveOpts.DatabaseUser = os.Getenv("DB_USER")
+	serveOpts.DatabaseName = os.Getenv("DB_NAME")
+	serveOpts.DatabaseURL = os.Getenv("DB_URL")
 	serveOpts.KubeappsNamespace = os.Getenv("POD_NAMESPACE")
 	serveOpts.AuthorizationHeader = os.Getenv("AUTHORIZATION_HEADER")
 	serveOpts.DockerConfigJson = os.Getenv("DOCKER_CONFIG_JSON")

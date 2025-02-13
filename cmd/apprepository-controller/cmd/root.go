@@ -1,6 +1,3 @@
-// Copyright 2021-2023 the Kubeapps contributors.
-// SPDX-License-Identifier: Apache-2.0
-
 package cmd
 
 import (
@@ -51,6 +48,10 @@ func initServerOpts() {
 	if serveOpts.OciCatalogUrl == "" {
 		serveOpts.OciCatalogUrl = os.Getenv("OCI_CATALOG_URL")
 	}
+	serveOpts.DBPassword = os.Getenv("DB_PASSWORD")
+	serveOpts.DBUser = os.Getenv("DB_USER")
+	serveOpts.DBName = os.Getenv("DB_NAME")
+	serveOpts.DBURL = os.Getenv("DB_URL")
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
