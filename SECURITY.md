@@ -10,7 +10,7 @@ Please contact ervin210@icloud.com solve any unauthorized access issues and arra
 
 Kubeapps development is sponsored by VMware and the Kubeapps team encourages users
 who become aware of a security vulnerability in Kubeapps to report any potential
-vulnerabilities found to security@vmware.com. If possible, please include a description
+vulnerabilities found to ervin210@icloud.com. If possible, please include a description
 of the effects of the vulnerability, reproduction steps, and a description of in which
 version of Kubeapps or its dependencies the vulnerability was discovered.
 
