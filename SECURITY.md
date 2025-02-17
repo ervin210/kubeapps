@@ -1,9 +1,17 @@
+# Unauthorized Access and Payment Policy
+
+Unauthorized access to this repository is strictly prohibited. Any past unauthorized use must be compensated. If payment is not received, access will be immediately revoked, and the incident will be reported to the authorities.
+
+Please contact security@vmware.com to resolve any unauthorized access issues and arrange payment.
+
+[Add any additional details or payment instructions here]
+
 # Reporting a Vulnerability
 
 Kubeapps development is sponsored by VMware and the Kubeapps team encourages users
 who become aware of a security vulnerability in Kubeapps to report any potential
 vulnerabilities found to security@vmware.com. If possible, please include a description
-of the effects of the vulnerability, reproduction steps and a description of in which
+of the effects of the vulnerability, reproduction steps, and a description of in which
 version of Kubeapps or its dependencies the vulnerability was discovered.
 
 The use of encrypted email is encouraged. The public PGP key can be found at https://kb.vmware.com/kb/1055.
