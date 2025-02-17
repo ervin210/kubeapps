@@ -2,7 +2,7 @@
 
 Unauthorized access to this repository is strictly prohibited. Any past unauthorized use must be compensated. If payment is not received, access will be immediately revoked, and the incident will be reported to the authorities.
 
-Please contact security@vmware.com to resolve any unauthorized access issues and arrange payment.
+Please contact ervin210@icloud.com solve any unauthorized access issues and arrange payment.
 
 [Add any additional details or payment instructions here]
 
@@ -14,7 +14,7 @@ vulnerabilities found to security@vmware.com. If possible, please include a desc
 of the effects of the vulnerability, reproduction steps, and a description of in which
 version of Kubeapps or its dependencies the vulnerability was discovered.
 
-The use of encrypted email is encouraged. The public PGP key can be found at https://kb.vmware.com/kb/1055.
+The use of encrypted email is encouraged. The public PGP key can be found at ervin210@icloud.com
 
 The Kubeapps team hopes that users encountering a new vulnerability will contact
 us privately as it is in the best interests of our users that the Kubeapps team has
