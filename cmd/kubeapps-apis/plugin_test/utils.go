@@ -1,20 +1,11 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package plugin_test
 
 import (
-	corev1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	plugins "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
+	corev1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
+	plugins "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
 )
 
 const (
@@ -39,12 +30,19 @@ const (
 	DefaultValues           = "key: value"
 	DefaultMaintainerName   = "me"
 	DefaultMaintainerEmail  = "me@example.com"
+	DefaultRepoInterval     = "1m"
 )
 
 var defaultInstalledPackageStatus = &corev1.InstalledPackageStatus{
 	Ready:      true,
 	Reason:     corev1.InstalledPackageStatus_STATUS_REASON_INSTALLED,
 	UserReason: "ReconciliationSucceeded",
+}
+
+var defaultRepoStatus = &corev1.PackageRepositoryStatus{
+	Ready:      true,
+	Reason:     corev1.PackageRepositoryStatus_STATUS_REASON_SUCCESS,
+	UserReason: "IndexationSucceed",
 }
 
 func MakeAvailablePackageSummary(name string, plugin *plugins.Plugin) *corev1.AvailablePackageSummary {
@@ -120,6 +118,15 @@ func MakeAvailablePackageDetail(name string, plugin *plugins.Plugin) *corev1.Ava
 	}
 }
 
+func MakeAvailablePackageMetadata(media_type, name, description, url string) *corev1.PackageMetadata {
+	return &corev1.PackageMetadata{
+		MediaType:   media_type,
+		Name:        name,
+		Description: description,
+		Url:         url,
+	}
+}
+
 func MakeInstalledPackageDetail(name string, plugin *plugins.Plugin) *corev1.InstalledPackageDetail {
 	return &corev1.InstalledPackageDetail{
 		InstalledPackageRef: &corev1.InstalledPackageReference{
@@ -160,5 +167,42 @@ func MakePackageAppVersion(appVersion, pkgVersion string) *corev1.PackageAppVers
 	return &corev1.PackageAppVersion{
 		AppVersion: appVersion,
 		PkgVersion: pkgVersion,
+	}
+}
+
+func MakePackageRepositoryDetail(name string, plugin *plugins.Plugin) *corev1.PackageRepositoryDetail {
+	return &corev1.PackageRepositoryDetail{
+		PackageRepoRef: &corev1.PackageRepositoryReference{
+			Context:    &corev1.Context{Cluster: GlobalPackagingCluster, Namespace: DefaultNamespace},
+			Identifier: name,
+			Plugin:     plugin,
+		},
+		Name:            name,
+		Description:     DefaultDescription,
+		NamespaceScoped: false,
+		Type:            "helm",
+		Url:             DefaultRepoURL,
+		Interval:        DefaultRepoInterval,
+		TlsConfig:       nil,
+		Auth:            nil,
+		CustomDetail:    nil,
+		Status:          defaultRepoStatus,
+	}
+}
+
+func MakePackageRepositorySummary(name string, plugin *plugins.Plugin) *corev1.PackageRepositorySummary {
+	return &corev1.PackageRepositorySummary{
+		PackageRepoRef: &corev1.PackageRepositoryReference{
+			Context:    &corev1.Context{Cluster: GlobalPackagingCluster, Namespace: DefaultNamespace},
+			Identifier: name,
+			Plugin:     plugin,
+		},
+		Name:            name,
+		Description:     DefaultDescription,
+		NamespaceScoped: false,
+		Type:            "helm",
+		Url:             DefaultRepoURL,
+		Status:          defaultRepoStatus,
+		RequiresAuth:    false,
 	}
 }

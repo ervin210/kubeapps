@@ -1,28 +1,31 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsFormGroup } from "@cds/react/forms";
 import actions from "actions";
+import AlertGroup from "components/AlertGroup";
 import AvailablePackageDetailExcerpt from "components/Catalog/AvailablePackageDetailExcerpt";
-import Alert from "components/js/Alert";
-import Column from "components/js/Column";
-import Row from "components/js/Row";
+import Column from "components/Column";
+import DeploymentFormBody from "components/DeploymentForm/DeploymentFormBody";
+import LoadingWrapper from "components/LoadingWrapper";
 import PackageHeader from "components/PackageHeader/PackageHeader";
 import PackageVersionSelector from "components/PackageHeader/PackageVersionSelector";
-import { push } from "connected-react-router";
+import Row from "components/Row";
 import * as jsonpatch from "fast-json-patch";
-import * as yaml from "js-yaml";
-import { useEffect, useState } from "react";
+import { usePush } from "hooks/push";
+import { useEffect, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Action } from "redux";
 import { ThunkDispatch } from "redux-thunk";
-import { deleteValue, setValue } from "../../shared/schema";
-import { IStoreState } from "../../shared/types";
-import * as url from "../../shared/url";
-import DeploymentFormBody from "../DeploymentFormBody/DeploymentFormBody";
-import LoadingWrapper from "../LoadingWrapper/LoadingWrapper";
+import { IStoreState } from "shared/types";
+import * as url from "shared/url";
+import { deleteValue, parseToJS, setValue } from "shared/yamlUtils";
 
 export interface IUpgradeFormProps {
   version?: string;
 }
 
+// TODO(agamez): Use the YAML-node based functions to avoid re-parse the yaml again and again
 function applyModifications(mods: jsonpatch.Operation[], values: string) {
   // And we add any possible change made to the original version
   if (mods.length) {
@@ -62,13 +65,14 @@ function UpgradeForm(props: IUpgradeFormProps) {
   const [deployedValues, setDeployedValues] = useState("");
   const [isDeploying, setIsDeploying] = useState(false);
   const [valuesModified, setValuesModified] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     // This block just will be run once, given that populating
     // the list of versions does not depend on anything else
     if (selectedPackage.versions.length === 0) {
       dispatch(
-        actions.packages.fetchAvailablePackageVersions(
+        actions.availablepackages.fetchAvailablePackageVersions(
           installedAppInstalledPackageDetail?.availablePackageRef,
         ),
       );
@@ -76,7 +80,7 @@ function UpgradeForm(props: IUpgradeFormProps) {
         // Additionally, mark the current installed package version as the selected,
         // next time, the selection will be handled by selectVersion()
         dispatch(
-          actions.packages.receiveSelectedAvailablePackageDetail(
+          actions.availablepackages.receiveSelectedAvailablePackageDetail(
             installedAppAvailablePackageDetail,
           ),
         );
@@ -84,7 +88,7 @@ function UpgradeForm(props: IUpgradeFormProps) {
       // If a version has been manually selected (eg. in the URL), fetch it explicitly
       if (props.version) {
         dispatch(
-          actions.packages.fetchAndSelectAvailablePackageDetail(
+          actions.availablepackages.fetchAndSelectAvailablePackageDetail(
             installedAppInstalledPackageDetail?.availablePackageRef,
             props.version,
           ),
@@ -100,10 +104,15 @@ function UpgradeForm(props: IUpgradeFormProps) {
   ]);
 
   useEffect(() => {
-    if (installedAppAvailablePackageDetail?.defaultValues && !modifications) {
+    if (
+      installedAppAvailablePackageDetail?.defaultValues &&
+      installedAppInstalledPackageDetail?.valuesApplied &&
+      installedAppInstalledPackageDetail?.valuesApplied !== "null" &&
+      !modifications
+    ) {
       // Calculate modifications from the default values
-      const defaultValuesObj = yaml.load(installedAppAvailablePackageDetail?.defaultValues) || {};
-      const deployedValuesObj = yaml.load(installedAppInstalledPackageDetail?.valuesApplied || "");
+      const defaultValuesObj = parseToJS(installedAppAvailablePackageDetail?.defaultValues);
+      const deployedValuesObj = parseToJS(installedAppInstalledPackageDetail?.valuesApplied);
       const newModifications = jsonpatch.compare(defaultValuesObj as any, deployedValuesObj as any);
       const values = applyModifications(
         newModifications,
@@ -149,12 +158,14 @@ function UpgradeForm(props: IUpgradeFormProps) {
 
   const selectVersion = (e: React.ChangeEvent<HTMLSelectElement>) => {
     dispatch(
-      actions.packages.fetchAndSelectAvailablePackageDetail(
+      actions.availablepackages.fetchAndSelectAvailablePackageDetail(
         installedAppInstalledPackageDetail?.availablePackageRef,
         e.currentTarget.value,
       ),
     );
   };
+
+  const push = usePush();
 
   const handleDeploy = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -165,7 +176,7 @@ function UpgradeForm(props: IUpgradeFormProps) {
       installedAppInstalledPackageDetail?.availablePackageRef?.context?.namespace
     ) {
       const deployedSuccess = await dispatch(
-        actions.apps.updateInstalledPackage(
+        actions.installedpackages.updateInstalledPackage(
           installedAppInstalledPackageDetail?.installedPackageRef,
           availablePackageDetail,
           appValues,
@@ -174,7 +185,7 @@ function UpgradeForm(props: IUpgradeFormProps) {
       );
       setIsDeploying(false);
       if (deployedSuccess) {
-        dispatch(push(url.app.apps.get(installedAppInstalledPackageDetail?.installedPackageRef)));
+        push(url.app.apps.get(installedAppInstalledPackageDetail?.installedPackageRef));
       }
     }
   };
@@ -187,7 +198,9 @@ function UpgradeForm(props: IUpgradeFormProps) {
           The application is being upgraded, please wait...
         </h3>
       )}
-      {!isFetching && error && <Alert theme="danger">An error occurred: {error?.message}</Alert>}
+      {!isFetching && error && (
+        <AlertGroup status="danger">An error occurred: {error?.message}.</AlertGroup>
+      )}
       <LoadingWrapper
         loaded={!isDeploying && !isFetching && versions?.length > 0 && !!availablePackageDetail}
       >
@@ -219,7 +232,7 @@ function UpgradeForm(props: IUpgradeFormProps) {
                       <AvailablePackageDetailExcerpt pkg={availablePackageDetail} />
                     </Column>
                     <Column span={9}>
-                      <form onSubmit={handleDeploy}>
+                      <form onSubmit={handleDeploy} ref={formRef}>
                         <CdsFormGroup
                           className="deployment-form"
                           layout="vertical"
@@ -250,6 +263,7 @@ function UpgradeForm(props: IUpgradeFormProps) {
                           setValues={handleValuesChange}
                           appValues={appValues}
                           setValuesModified={setValuesModifiedTrue}
+                          formRef={formRef}
                         />
                       </form>
                     </Column>

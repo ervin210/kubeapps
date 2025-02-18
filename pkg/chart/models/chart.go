@@ -1,18 +1,5 @@
-/*
-Copyright (c) 2017 The Helm Authors
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2017-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 package models
 
@@ -25,16 +12,16 @@ import (
 	"helm.sh/helm/v3/pkg/chart"
 )
 
-// Repo holds the App repository basic details
-type Repo struct {
+// AppRepository holds the App repository basic details
+type AppRepository struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
 	URL       string `json:"url"`
 	Type      string `json:"type"`
 }
 
-// RepoInternal holds the App repository details including auth
-type RepoInternal struct {
+// AppRepositoryInternal holds the App repository details including auth
+type AppRepositoryInternal struct {
 	Namespace           string `json:"namespace"`
 	Name                string `json:"name"`
 	URL                 string `json:"url"`
@@ -46,7 +33,7 @@ type RepoInternal struct {
 type Chart struct {
 	ID              string             `json:"ID" bson:"chart_id"`
 	Name            string             `json:"name"`
-	Repo            *Repo              `json:"repo"`
+	Repo            *AppRepository     `json:"repo"`
 	Description     string             `json:"description"`
 	Home            string             `json:"home"`
 	Keywords        []string           `json:"keywords"`
@@ -83,19 +70,21 @@ type ChartVersion struct {
 	// The following three fields get set with the URL paths to the respective
 	// chart files (as opposed to the similar fields on ChartFiles which
 	// contain the actual content).
-	Readme string `json:"readme" bson:"-"`
-	Values string `json:"values" bson:"-"`
-	Schema string `json:"schema" bson:"-"`
+	Readme                  string            `json:"readme" bson:"-"`
+	DefaultValues           string            `json:"values" bson:"-"`
+	AdditionalDefaultValues map[string]string `json:"additional_values" bson:"-"`
+	Schema                  string            `json:"schema" bson:"-"`
 }
 
-// ChartFiles holds the README and values for a given chart version
+// ChartFiles holds the README and default values for a given chart version
 type ChartFiles struct {
-	ID     string `bson:"file_id"`
-	Readme string
-	Values string
-	Schema string
-	Repo   *Repo
-	Digest string
+	ID                      string `bson:"file_id"`
+	Readme                  string
+	DefaultValues           string
+	AdditionalDefaultValues map[string]string
+	Schema                  string
+	Repo                    *AppRepository
+	Digest                  string
 }
 
 // Allow to convert ChartFiles to a sql JSON
@@ -103,16 +92,11 @@ func (a ChartFiles) Value() (driver.Value, error) {
 	return json.Marshal(a)
 }
 
-type RepoCheck struct {
-	ID         string    `bson:"_id"`
-	LastUpdate time.Time `bson:"last_update"`
-	Checksum   string    `bson:"checksum"`
-}
-
 // some constant strings used as keys in maps in several modules
 const (
-	ReadmeKey    = "readme"
-	ValuesKey    = "values"
-	SchemaKey    = "schema"
-	ChartYamlKey = "chartYaml"
+	ReadmeKey                  = "readme"
+	DefaultValuesKey           = "values"
+	AdditionalDefaultValuesKey = "additional-values"
+	SchemaKey                  = "schema"
+	ChartYamlKey               = "chartYaml"
 )

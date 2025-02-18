@@ -1,0 +1,1136 @@
+// Copyright 2021-2024 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"math/rand"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	sourcev1beta2 "github.com/fluxcd/source-controller/api/v1beta2"
+	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
+	corev1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
+	fluxplugin "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/plugins/fluxv2/packages/v1alpha1"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/fluxv2/packages/v1alpha1/common"
+	"golang.org/x/sync/semaphore"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	apiv1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
+)
+
+// This is an integration test: it tests the full integration of flux plugin with flux back-end
+// To run these tests, enable ENABLE_FLUX_INTEGRATION_TESTS variable
+// pre-requisites for these tests to run:
+// 1) kind cluster with flux deployed
+// 2) kubeapps apis apiserver service running with fluxv2 plug-in enabled, port forwarded to 8080, e.g.
+//      kubectl -n kubeapps port-forward svc/kubeapps-internal-kubeappsapis 8080:8080
+// 3) run './integ-test-env.sh deploy' once prior to these tests
+
+// this integration test is meant to test a scenario when the redis cache is confiured with maxmemory
+// too small to be able to fit all the repos needed to satisfy the request for GetAvailablePackageSummaries
+// and redis cache eviction kicks in. Also, the kubeapps-apis pod should have a large memory limit (1Gb) set
+// To set up such environment one can use  "-f ./site/content/docs/latest/reference/manifests/kubeapps-local-dev-redis-tiny-values.yaml"
+// option when installing kubeapps via "helm upgrade"
+// It is worth noting that exactly how many copies of bitnami repo can be held in the cache at any given time varies
+// This is because the size of the index.yaml we get from bitnami does fluctuate quite a bit over time:
+// [kubeapps]$ ls -l bitnami_index.yaml
+// -rw-r--r--@ 1 gfichtenholt  staff  8432962 Jun 20 02:35 bitnami_index.yaml
+// [kubeapps]$ ls -l bitnami_index.yaml
+// -rw-rw-rw-@ 1 gfichtenholt  staff  10394218 Nov  7 19:41 bitnami_index.yaml
+// Also now we are caching helmcharts themselves for each repo so that will affect how many will fit too
+func TestKindClusterGetAvailablePackageSummariesForLargeReposAndTinyRedis(t *testing.T) {
+	fluxPlugin, _, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	redisCli, err := newRedisClientForIntegrationTest(t)
+	if err != nil {
+		t.Fatalf("%+v", err)
+	}
+
+	// assume 30Mb redis cache for now. See comment above
+	if err = redisCheckTinyMaxMemory(t, redisCli, "31457280"); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// ref https://redis.io/topics/notifications
+	if err = redisCli.ConfigSet(redisCli.Context(), "notify-keyspace-events", "EA").Err(); err != nil {
+		t.Fatalf("%+v", err)
+	}
+
+	if err = usesBitnamiCatalog(t); err != nil {
+		t.Fatalf("Failed to get number of charts in bitnami catalog due to: %v", err)
+	}
+
+	const MAX_REPOS_NEVER = 100
+	var totalRepos = 0
+	// ref https://stackoverflow.com/questions/32840687/timeout-for-waitgroup-wait
+	evictedRepos := sets.Set[string]{}
+
+	// do this part in a func so we can defer subscribe.Close
+	func() {
+		// ref https://medium.com/nerd-for-tech/redis-getting-notified-when-a-key-is-expired-or-changed-ca3e1f1c7f0a
+		subscribe := redisCli.PSubscribe(redisCli.Context(), "__keyevent@0__:*")
+		defer subscribe.Close()
+
+		sem := semaphore.NewWeighted(MAX_REPOS_NEVER)
+		if err := sem.Acquire(context.Background(), MAX_REPOS_NEVER); err != nil {
+			t.Fatalf("%v", err)
+		}
+
+		go redisReceiveNotificationsLoop(t, subscribe.Channel(), sem, &evictedRepos)
+
+		// now load some large repos (bitnami)
+		// I didn't want to store a large (>10MB) copy of bitnami repo in our git,
+		// so for now let it fetch directly from bitnami website
+		// we'll keep adding repos one at a time, until we get an event from redis
+		// about the first evicted repo entry
+		for ; totalRepos < MAX_REPOS_NEVER && evictedRepos.Len() == 0; totalRepos++ {
+			repo := types.NamespacedName{
+				Name:      fmt.Sprintf("bitnami-%d", totalRepos),
+				Namespace: "default",
+			}
+			// this is to make sure we allow enough time for repository to be created and come to ready state
+			if err = kubeAddHelmRepositoryAndCleanup(t, repo, "", in_cluster_bitnami_url, "", 0); err != nil {
+				t.Fatalf("%v", err)
+			}
+			// wait until this repo have been indexed and cached up to 10 minutes
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute*10)
+			defer cancel()
+			if err := sem.Acquire(ctx, 1); err != nil {
+				t.Fatalf("Timed out waiting for Redis event: %v", err)
+			}
+		}
+		t.Logf("Done with first part of the test, total repos: [%d], evicted repos: [%d]",
+			totalRepos, len(evictedRepos))
+	}()
+
+	if evictedRepos.Len() == 0 {
+		t.Fatalf("Failing because redis did not evict any entries")
+	}
+
+	if keys, err := redisCli.Keys(redisCli.Context(), "helmrepositories:*").Result(); err != nil {
+		t.Fatalf("%v", err)
+	} else {
+		// the cache should only big enough to be able to hold at most (totalRepos-1) of the keys
+		// one (or more) entries may have been evicted
+		if len(keys) > totalRepos-1 {
+			t.Fatalf("Expected at most [%d] keys in cache but got: %s", totalRepos-1, keys)
+		}
+	}
+
+	// one particular code path I'd like to test:
+	// make sure that GetAvailablePackageVersions() works w.r.t. a cache entry that's been evicted
+	name := types.NamespacedName{
+		Name:      "test-create-admin-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcContext, err := newGrpcAdminContext(t, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// copy the evicted list because before ForEach loop below will modify it in a goroutine
+	evictedCopy := sets.StringKeySet(evictedRepos)
+
+	// do this part in a func so we can defer subscribe.Close
+	func() {
+		subscribe := redisCli.PSubscribe(redisCli.Context(), "__keyevent@0__:*")
+		defer subscribe.Close()
+
+		go redisReceiveNotificationsLoop(t, subscribe.Channel(), nil, &evictedRepos)
+
+		for _, k := range evictedCopy.List() {
+			name := strings.Split(k, ":")[2]
+			t.Logf("Checking apache version in repo [%s]...", name)
+			grpcContext, cancel := context.WithTimeout(grpcContext, defaultContextTimeout)
+			defer cancel()
+			resp, err := fluxPlugin.GetAvailablePackageVersions(
+				grpcContext, &corev1.GetAvailablePackageVersionsRequest{
+					AvailablePackageRef: &corev1.AvailablePackageReference{
+						Context: &corev1.Context{
+							Namespace: "default",
+						},
+						Identifier: name + "/apache",
+					},
+				})
+			if err != nil {
+				t.Fatalf("%v", err)
+			} else if len(resp.PackageAppVersions) < 5 {
+				t.Fatalf("Expected at least 5 versions for apache chart, got: %s", resp)
+			}
+		}
+
+		t.Logf("Done with second part of the test")
+	}()
+
+	// do this part in a func so we can defer subscribe.Close
+	func() {
+		subscribe := redisCli.PSubscribe(redisCli.Context(), "__keyevent@0__:*")
+		defer subscribe.Close()
+
+		// above loop should cause a few more entries to be evicted, but just to be sure let's
+		// load a few more copies of bitnami repo into the cache. The goal of this for loop is
+		// to force redis to evict more repo(s)
+		sem := semaphore.NewWeighted(MAX_REPOS_NEVER)
+		if err := sem.Acquire(context.Background(), MAX_REPOS_NEVER); err != nil {
+			t.Fatalf("%v", err)
+		}
+		go redisReceiveNotificationsLoop(t, subscribe.Channel(), sem, &evictedRepos)
+
+		for ; totalRepos < MAX_REPOS_NEVER && evictedRepos.Len() == evictedCopy.Len(); totalRepos++ {
+			repo := types.NamespacedName{
+				Name:      fmt.Sprintf("bitnami-%d", totalRepos),
+				Namespace: "default",
+			}
+			// this is to make sure we allow enough time for repository to be created and come to ready state
+			if err = kubeAddHelmRepositoryAndCleanup(t, repo, "", in_cluster_bitnami_url, "", 0); err != nil {
+				t.Fatalf("%v", err)
+			}
+			// wait until this repo have been indexed and cached up to 10 minutes
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute*10)
+			defer cancel()
+			if err := sem.Acquire(ctx, 1); err != nil {
+				t.Fatalf("Timed out waiting for Redis event: %v", err)
+			}
+		}
+
+		t.Logf("Done with third part of the test")
+	}()
+
+	if keys, err := redisCli.Keys(redisCli.Context(), "helmrepositories:*").Result(); err != nil {
+		t.Fatalf("%v", err)
+	} else {
+		// the cache should only big enough to be able to hold at most (totalRepos-1) of the keys
+		// one (or more) entries MUST have been evicted
+		if len(keys) > totalRepos-1 {
+			t.Fatalf("Expected at most %d keys in cache but got [%s]", totalRepos-1, keys)
+		}
+	}
+
+	// not related to low maxmemory but as long as we are here might as well check that
+	// there is a Unauthenticated failure when there are no credenitals in the request
+	_, err = fluxPlugin.GetAvailablePackageSummaries(context.TODO(), &corev1.GetAvailablePackageSummariesRequest{})
+	if err == nil || status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("Expected Unauthenticated, got %v", err)
+	}
+
+	grpcContext, cancel := context.WithTimeout(grpcContext, 90*time.Second)
+	defer cancel()
+	resp2, err := fluxPlugin.GetAvailablePackageSummaries(grpcContext, &corev1.GetAvailablePackageSummariesRequest{})
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// we need to make sure that response contains packages from all existing repositories
+	// regardless whether they're in the cache or not
+	expected := sets.Set[string]{}
+	for i := 0; i < totalRepos; i++ {
+		repo := fmt.Sprintf("bitnami-%d", i)
+		expected.Insert(repo)
+	}
+	for _, s := range resp2.AvailablePackageSummaries {
+		id := strings.Split(s.AvailablePackageRef.Identifier, "/")
+		expected.Delete(id[0])
+	}
+
+	if expected.Len() != 0 {
+		t.Fatalf("Expected to get packages from these repositories: %s, but did not get any",
+			expected.UnsortedList())
+	}
+}
+
+// scenario:
+//  1. create two namespaces
+//  2. create two helm repositories, each containing a single package: one in each of the namespaces from (1)
+//  3. create 3 service-accounts in default namespace:
+//     a) - "...-admin", with cluster-wide access
+//     b) - "...-loser", without cluster-wide access or any access to any of the namespaces
+//     c) - "...-limited", without cluster-wide access, but with read access to one namespace
+//  4. execute GetAvailablePackageSummaries():
+//     a) with 3a) => should return 2 packages
+//     b) with 3b) => should return 0 packages
+//     c) with 3c) => should return 1 package
+//  5. execute GetAvailablePackageDetail():
+//     a) with 3a) => should work 2 times
+//     b) with 3b) => should fail 2 times with PermissionDenied error
+//     c) with 3c) => should fail once and work once
+//  6. execute GetAvailablePackageVersions():
+//     a) with 3a) => should work 2 times
+//     b) with 3b) => should fail 2 times with PermissionDenied error
+//     c) with 3c) => should fail once and work once
+//
+// ref https://github.com/vmware-tanzu/kubeapps/issues/4390
+func TestKindClusterRepoAndChartRBAC(t *testing.T) {
+	fluxPluginClient, _, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	names := []types.NamespacedName{
+		{Name: "podinfo-1", Namespace: "test-" + randSeq(rnd, 4)},
+		{Name: "podinfo-2", Namespace: "test-" + randSeq(rnd, 4)},
+	}
+
+	for _, n := range names {
+		if err := kubeCreateNamespaceAndCleanup(t, n.Namespace); err != nil {
+			t.Fatal(err)
+		} else if err = kubeAddHelmRepositoryAndCleanup(t, n, "", podinfo_repo_url, "", 0); err != nil {
+			t.Fatal(err)
+		}
+		// wait until this repo reaches 'Ready'
+		if err = kubeWaitUntilHelmRepositoryIsReady(t, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svcAcctName := types.NamespacedName{
+		Name:      "test-repo-rbac-admin-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtxAdmin, err := newGrpcAdminContext(t, svcAcctName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, n := range names {
+		out := kubectlCanI(t, svcAcctName, "get", fluxHelmRepositories, n.Namespace)
+		if out != "yes" {
+			t.Errorf("Expected [yes], got [%s]", out)
+		}
+	}
+
+	svcAcctName2 := types.NamespacedName{
+		Name:      "test-repo-rbac-loser-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcCtxLoser, err := newGrpcContextForServiceAccountWithoutAccessToAnyNamespace(t, svcAcctName2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		out := kubectlCanI(
+			t, svcAcctName2, "get", fluxHelmRepositories, n.Namespace)
+		if out != "no" {
+			t.Errorf("Expected [no], got [%s]", out)
+		}
+	}
+
+	rules := map[string][]rbacv1.PolicyRule{
+		names[1].Namespace: {
+			{
+				APIGroups: []string{sourcev1beta2.GroupVersion.Group},
+				Resources: []string{fluxHelmRepositories},
+				Verbs:     []string{"get", "list"},
+			},
+			{
+				APIGroups: []string{sourcev1beta2.GroupVersion.Group},
+				Resources: []string{"helmcharts"},
+				Verbs:     []string{"get", "list"},
+			},
+		},
+	}
+
+	svcAcctName3 := types.NamespacedName{
+		Name:      "test-repo-rbac-limited-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+
+	grpcCtxLimited, err := newGrpcContextForServiceAccountWithRules(t, svcAcctName3, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, n := range names {
+		out := kubectlCanI(t, svcAcctName3, "get", fluxHelmRepositories, n.Namespace)
+		if i == 0 {
+			if out != "no" {
+				t.Errorf("Expected [no], got [%s]", out)
+			}
+		} else {
+			if out != "yes" {
+				t.Errorf("Expected [yes], got [%s]", out)
+			}
+		}
+	}
+
+	grpcCtx, cancel := context.WithTimeout(grpcCtxAdmin, defaultContextTimeout)
+	defer cancel()
+	resp, err := fluxPluginClient.GetAvailablePackageSummaries(
+		grpcCtx,
+		&corev1.GetAvailablePackageSummariesRequest{
+			Context: &corev1.Context{},
+		})
+	if err != nil {
+		t.Fatal(err)
+	} else if len(resp.AvailablePackageSummaries) != 2 {
+		t.Errorf("Expected 2 packages, got %s", common.PrettyPrint(resp))
+	}
+
+	for _, n := range names {
+		grpcCtx, cancel = context.WithTimeout(grpcCtxAdmin, defaultContextTimeout)
+		defer cancel()
+		resp2, err := fluxPluginClient.GetAvailablePackageDetail(
+			grpcCtx,
+			&corev1.GetAvailablePackageDetailRequest{
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context:    &corev1.Context{Namespace: n.Namespace},
+					Identifier: n.Name + "/podinfo",
+				},
+			})
+		if err != nil {
+			t.Fatal(err)
+		} else if resp2.AvailablePackageDetail.SourceUrls[0] != "https://github.com/stefanprodan/podinfo" {
+			t.Errorf("Unexpected response: %s", common.PrettyPrint(resp2))
+		}
+
+		grpcCtx, cancel = context.WithTimeout(grpcCtxAdmin, defaultContextTimeout)
+		defer cancel()
+		resp3, err := fluxPluginClient.GetAvailablePackageVersions(
+			grpcCtx,
+			&corev1.GetAvailablePackageVersionsRequest{
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context:    &corev1.Context{Namespace: n.Namespace},
+					Identifier: n.Name + "/podinfo",
+				},
+			})
+		if err != nil {
+			t.Fatal(err)
+		} else if len(resp3.PackageAppVersions) != 2 {
+			t.Errorf("Unexpected response: %s", common.PrettyPrint(resp3))
+		}
+	}
+
+	grpcCtx, cancel = context.WithTimeout(grpcCtxLoser, defaultContextTimeout)
+	defer cancel()
+	resp, err = fluxPluginClient.GetAvailablePackageSummaries(
+		grpcCtx,
+		&corev1.GetAvailablePackageSummariesRequest{
+			Context: &corev1.Context{},
+		})
+	if err != nil {
+		t.Fatal(err)
+	} else if len(resp.AvailablePackageSummaries) != 0 {
+		t.Errorf("Expected 0 packages, got %s", common.PrettyPrint(resp))
+	}
+
+	for _, n := range names {
+		grpcCtx, cancel = context.WithTimeout(grpcCtxLoser, defaultContextTimeout)
+		defer cancel()
+		_, err := fluxPluginClient.GetAvailablePackageDetail(
+			grpcCtx,
+			&corev1.GetAvailablePackageDetailRequest{
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context:    &corev1.Context{Namespace: n.Namespace},
+					Identifier: n.Name + "/podinfo",
+				},
+			})
+		if status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("Expected PermissionDenied error, got %v", err)
+		}
+
+		grpcCtx, cancel = context.WithTimeout(grpcCtxLoser, defaultContextTimeout)
+		defer cancel()
+		_, err = fluxPluginClient.GetAvailablePackageVersions(
+			grpcCtx,
+			&corev1.GetAvailablePackageVersionsRequest{
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context:    &corev1.Context{Namespace: n.Namespace},
+					Identifier: n.Name + "/podinfo",
+				},
+			})
+		if status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("Expected PermissionDenied error, got %v", err)
+		}
+	}
+
+	grpcCtx, cancel = context.WithTimeout(grpcCtxLimited, defaultContextTimeout)
+	defer cancel()
+	resp, err = fluxPluginClient.GetAvailablePackageSummaries(
+		grpcCtx,
+		&corev1.GetAvailablePackageSummariesRequest{
+			Context: &corev1.Context{},
+		})
+	if err != nil {
+		t.Fatal(err)
+	} else if len(resp.AvailablePackageSummaries) != 1 {
+		t.Errorf("Unexpected response: %s", common.PrettyPrint(resp))
+	}
+
+	for i, n := range names {
+		grpcCtx, cancel = context.WithTimeout(grpcCtxLimited, defaultContextTimeout)
+		defer cancel()
+		resp, err = fluxPluginClient.GetAvailablePackageSummaries(
+			grpcCtx,
+			&corev1.GetAvailablePackageSummariesRequest{
+				Context: &corev1.Context{
+					Namespace: n.Namespace,
+				},
+			})
+		if err != nil {
+			t.Fatal(err)
+		} else if len(resp.AvailablePackageSummaries) != 1 {
+			t.Errorf("Unexpected response: %s", common.PrettyPrint(resp))
+		}
+
+		grpcCtx, cancel = context.WithTimeout(grpcCtxLimited, defaultContextTimeout)
+		defer cancel()
+		resp2, err := fluxPluginClient.GetAvailablePackageDetail(
+			grpcCtx,
+			&corev1.GetAvailablePackageDetailRequest{
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context:    &corev1.Context{Namespace: n.Namespace},
+					Identifier: n.Name + "/podinfo",
+				},
+			})
+		if i == 0 {
+			if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("Expected PermissionDenied error, got %v", err)
+			}
+		} else if resp2.AvailablePackageDetail.SourceUrls[0] != "https://github.com/stefanprodan/podinfo" {
+			t.Errorf("Unexpected response: %s", common.PrettyPrint(resp2))
+		}
+
+		grpcCtx, cancel = context.WithTimeout(grpcCtxLimited, defaultContextTimeout)
+		defer cancel()
+		resp3, err := fluxPluginClient.GetAvailablePackageVersions(
+			grpcCtx,
+			&corev1.GetAvailablePackageVersionsRequest{
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context:    &corev1.Context{Namespace: n.Namespace},
+					Identifier: n.Name + "/podinfo",
+				},
+			})
+		if i == 0 {
+			if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("Expected PermissionDenied error, got %v", err)
+			}
+		} else if len(resp3.PackageAppVersions) != 2 {
+			t.Errorf("UnexpectedResponse: %s", common.PrettyPrint(resp3))
+		}
+	}
+}
+
+type testCaseKindClusterAvailablePackageEndpointsForOCISpec struct {
+	testName        string
+	registryUrl     string
+	secret          *apiv1.Secret
+	unauthenticated bool
+	unauthorized    bool
+}
+
+func testCaseKindClusterAvailablePackageEndpointsForGitHub(t *testing.T, rnd *rand.Rand) []testCaseKindClusterAvailablePackageEndpointsForOCISpec {
+	ghUser := os.Getenv("GITHUB_USER")
+	ghToken := os.Getenv("GITHUB_TOKEN")
+	if ghUser == "" || ghToken == "" {
+		t.Fatalf("Environment variables GITHUB_USER and GITHUB_TOKEN need to be set to run this test")
+	}
+	return []testCaseKindClusterAvailablePackageEndpointsForOCISpec{
+		{
+			testName:    "Testing [" + github_stefanprodan_podinfo_oci_registry_url + "] with basic auth secret",
+			registryUrl: github_stefanprodan_podinfo_oci_registry_url,
+			secret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				ghUser,
+				ghToken,
+			),
+		},
+		{
+			testName:    "Testing [" + github_stefanprodan_podinfo_oci_registry_url + "] with dockerconfigjson secret",
+			registryUrl: github_stefanprodan_podinfo_oci_registry_url,
+			secret: newDockerConfigJsonSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				"ghcr.io", ghUser, ghToken,
+			),
+		},
+	}
+}
+
+func testCaseKindClusterAvailablePackageEndpointsForHarbor(t *testing.T, rnd *rand.Rand) []testCaseKindClusterAvailablePackageEndpointsForOCISpec {
+	if err := setupHarborForIntegrationTest(t); err != nil {
+		t.Fatal(err)
+	}
+
+	harborRobotName, harborRobotSecret, err := setupHarborRobotAccount(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// per agamez request (slack thread 8/31/22)
+	harborCorpVMwareHost := os.Getenv("HARBOR_VMWARE_CORP_HOST")
+	if harborCorpVMwareHost == "" {
+		t.Fatal("Environment variable [HARBOR_VMWARE_CORP_HOST] needs to be set to run this test")
+	}
+	harborCorpVMwareRepoUrl := "oci://" + harborCorpVMwareHost + "/kubeapps_flux_integration"
+	harborCorpVMwareRepoRobotUser := os.Getenv("HARBOR_VMWARE_CORP_ROBOT_USER")
+	if harborCorpVMwareRepoRobotUser == "" {
+		t.Fatal("Environment variable [HARBOR_VMWARE_CORP_ROBOT_USER] needs to be set to run this test")
+	}
+	harborCorpVMwareRepoRobotSecret := os.Getenv("HARBOR_VMWARE_CORP_ROBOT_SECRET")
+	if harborCorpVMwareRepoRobotSecret == "" {
+		t.Fatal("Environment variable [HARBOR_VMWARE_CORP_ROBOT_SECRET] needs to be set to run this test")
+	}
+
+	return []testCaseKindClusterAvailablePackageEndpointsForOCISpec{
+		{
+			testName:    "Testing [" + harbor_stefanprodan_podinfo_oci_registry_url + "] with basic auth secret (admin)",
+			registryUrl: harbor_stefanprodan_podinfo_oci_registry_url,
+			secret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				harbor_admin_user,
+				harbor_admin_pwd,
+			),
+		},
+		{
+			testName:    "Testing [" + harbor_stefanprodan_podinfo_oci_registry_url + "] with basic auth secret (robot)",
+			registryUrl: harbor_stefanprodan_podinfo_oci_registry_url,
+			secret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				harborRobotName,
+				harborRobotSecret,
+			),
+		},
+		// harbor private repo (admin)
+		{
+			testName:    "Testing [" + harbor_stefanprodan_podinfo_private_oci_registry_url + "] with basic auth secret (admin)",
+			registryUrl: harbor_stefanprodan_podinfo_private_oci_registry_url,
+			secret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				harbor_admin_user,
+				harbor_admin_pwd,
+			),
+		},
+		// harbor private repo (robot)
+		{
+			testName:    "Testing [" + harbor_stefanprodan_podinfo_private_oci_registry_url + "] with basic auth secret (robot)",
+			registryUrl: harbor_stefanprodan_podinfo_private_oci_registry_url,
+			secret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				harborRobotName,
+				harborRobotSecret,
+			),
+		},
+		// harbor private repo (negative test for no secret)
+		{
+			testName:        "Testing [" + harbor_stefanprodan_podinfo_private_oci_registry_url + "] without secret",
+			registryUrl:     harbor_stefanprodan_podinfo_private_oci_registry_url,
+			unauthenticated: true,
+		},
+		// harbor private repo (negative test bad username/secret)
+		{
+			testName:    "Testing [" + harbor_stefanprodan_podinfo_private_oci_registry_url + "] bad username/secret",
+			registryUrl: harbor_stefanprodan_podinfo_private_oci_registry_url,
+			secret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				"kaka",
+				"kaka"),
+			unauthorized: true,
+		},
+		{
+			testName:    "Testing [" + harborCorpVMwareRepoUrl + "]",
+			registryUrl: harborCorpVMwareRepoUrl,
+			secret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				harborCorpVMwareRepoRobotUser,
+				harborCorpVMwareRepoRobotSecret),
+		},
+	}
+}
+
+func testCaseKindClusterAvailablePackageEndpointsForGcp(t *testing.T, rnd *rand.Rand) []testCaseKindClusterAvailablePackageEndpointsForOCISpec {
+	// ref: https://cloud.google.com/artifact-registry/docs/helm/authentication#token
+	gcpUser := "oauth2accesstoken"
+	gcpPasswd, err := gcloudPrintAccessToken(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ref https://cloud.google.com/artifact-registry/docs/helm/authentication#json-key
+	gcpKeyFile := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	if gcpKeyFile == "" {
+		t.Fatalf("Environment variable [GOOGLE_APPLICATION_CREDENTIALS] needs to be set to run this test")
+	}
+
+	gcpUser2 := "_json_key"
+	gcpServer2 := "us-west1-docker.pkg.dev"
+	gcpPasswd2, err := os.ReadFile(gcpKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return []testCaseKindClusterAvailablePackageEndpointsForOCISpec{
+		{
+			testName:    "Testing [" + gcp_stefanprodan_podinfo_oci_registry_url + "] with service access token",
+			registryUrl: gcp_stefanprodan_podinfo_oci_registry_url,
+			secret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				gcpUser,
+				string(gcpPasswd),
+			),
+		},
+		{
+			testName:    "Testing [" + gcp_stefanprodan_podinfo_oci_registry_url + "] with JSON key",
+			registryUrl: gcp_stefanprodan_podinfo_oci_registry_url,
+			secret: newDockerConfigJsonSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				gcpServer2,
+				gcpUser2,
+				string(gcpPasswd2),
+			),
+		},
+		// negative test for no secret
+		{
+			testName:        "Testing [" + gcp_stefanprodan_podinfo_oci_registry_url + "] without a secret",
+			registryUrl:     gcp_stefanprodan_podinfo_oci_registry_url,
+			unauthenticated: true,
+		},
+		// negative test for bad username/secret
+		{
+			testName:    "Testing [" + gcp_stefanprodan_podinfo_oci_registry_url + "] bad username/secret",
+			registryUrl: gcp_stefanprodan_podinfo_oci_registry_url,
+			secret: newDockerConfigJsonSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				gcpServer2,
+				"kaka",
+				"kaka",
+			),
+			unauthorized: true,
+		},
+	}
+}
+
+func TestKindClusterAvailablePackageEndpointsForOCI(t *testing.T) {
+	fluxPluginClient, fluxPluginReposClient, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// this is written this way so its relatively easy to comment out and run just a subset
+	// of the test cases when debugging failures
+	testCases := []testCaseKindClusterAvailablePackageEndpointsForOCISpec{}
+	testCases = append(testCases, testCaseKindClusterAvailablePackageEndpointsForGitHub(t, rnd)...)
+	testCases = append(testCases, testCaseKindClusterAvailablePackageEndpointsForHarbor(t, rnd)...)
+	testCases = append(testCases, testCaseKindClusterAvailablePackageEndpointsForGcp(t, rnd)...)
+
+	// TODO (gfichtenholt) harbor plainHTTP (not HTTPS) repo with robot account
+	//   this may or may not work see https://github.com/fluxcd/source-controller/issues/807
+	// TODO (gfichtenholt) TLS secret with CA
+	// TODO (gfichtenholt) TLS secret with CA, pub, priv assuming Flux supports it
+
+	/*
+		{
+			// this gets set up in ./testdata/integ-test-env.sh
+			// currently fails with AuthenticationFailed: failed to log into registry
+			//  'oci://registry-app-svc.default.svc.cluster.local:5000/helm-charts':
+			// Get "https://registry-app-svc.default.svc.cluster.local:5000/v2/":
+			// http: server gave HTTP response to HTTPS client
+			// the error comes from flux source-controller
+			// opened a new issue per souleb's request:
+			// https://github.com/fluxcd/source-controller/issues/805
+
+			testName:    "Testing [" + in_cluster_oci_registry_url + "]",
+			registryUrl: in_cluster_oci_registry_url,
+			secret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				"foo",
+				"bar",
+			),
+		},
+	*/
+
+	testKindClusterAvailablePackageEndpointsForOCIHelper(t, testCases, fluxPluginClient, fluxPluginReposClient, rnd)
+}
+
+func testKindClusterAvailablePackageEndpointsForOCIHelper(
+	t *testing.T,
+	testCases []testCaseKindClusterAvailablePackageEndpointsForOCISpec,
+	fluxPluginClient fluxplugin.FluxV2PackagesServiceClient,
+	fluxPluginReposClient fluxplugin.FluxV2RepositoriesServiceClient, rnd *rand.Rand) {
+
+	for _, tc := range testCases {
+		t.Run(tc.testName, func(t *testing.T) {
+			repoName := types.NamespacedName{
+				Name:      "my-podinfo-" + randSeq(rnd, 4),
+				Namespace: "default",
+			}
+
+			secretName := ""
+			if tc.secret != nil {
+				secretName = tc.secret.Name
+
+				if err := kubeCreateSecretAndCleanup(t, tc.secret); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := kubeAddHelmRepositoryAndCleanup(
+				t, repoName, "oci", tc.registryUrl, secretName, 0); err != nil {
+				t.Fatal(err)
+			}
+			// wait until this repo reaches 'Ready'
+			err := kubeWaitUntilHelmRepositoryIsReady(t, repoName)
+			if !tc.unauthorized {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err != nil {
+					if strings.Contains(err.Error(), "AuthenticationFailed: failed to login to registry") {
+						return // nothing more to check
+					} else {
+						t.Fatal(err)
+					}
+				} else {
+					t.Fatal("expected error, got nil")
+				}
+			}
+
+			adminName := types.NamespacedName{
+				Name:      "test-admin-" + randSeq(rnd, 4),
+				Namespace: "default",
+			}
+			grpcContext, err := newGrpcAdminContext(t, adminName)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// occasionally, on the server-side, I see a request that takes a really long time:
+			// I0923 03:26:42.829561       1 oci_repo.go:739] about to call helmGetter.Get(us-west1-docker.pkg.dev/vmware-kubeapps-ci/stefanprodan-podinfo-clone/podinfo:6.1.6)
+			// I0923 03:27:10.036728       1 oci_repo.go:742] helmGetter.Get(us-west1-docker.pkg.dev/vmware-kubeapps-ci/stefanprodan-podinfo-clone/podinfo:6.1.6) returned buffer size: [13544] error: <nil>
+			// so we'll use a longer timeout for these calls. Even so, every once in a while I get
+			// I0923 04:18:29.278764       1 oci_repo.go:739] about to call helmGetter.Get(us-west1-docker.pkg.dev/vmware-kubeapps-ci/stefanprodan-podinfo-clone/podinfo:6.1.6)
+			// I0923 04:23:30.391277       1 oci_repo.go:742] helmGetter.Get(us-west1-docker.pkg.dev/vmware-kubeapps-ci/stefanprodan-podinfo-clone/podinfo:6.1.6) returned buffer size: [13544] error: <nil>
+			//  i.e. an RPC call that takes > 4 minutes.
+			// DeadlineExceeded errors should not be retried because it means the server hasn't
+			// quite finished the original request even though the client is proceeding. The way the
+			// cache works is that a 2nd request is just not going to get past the rate limiting queue
+			// and in the end both will fail. There is no way for the client to know when the server finishes
+			// processing the 1st request, so for now, let's just allow a really long timeout
+			// I also occasionally see
+			// I0923 08:03:07.519347       1 oci_repo.go:649] login(us-west1-docker.pkg.dev): Get "https://us-west1-docker.pkg.dev/v2/": net/http: request canceled while waiting for connection (Client.Timeout exceeded while awaiting headers)
+			// and
+			// I0923 17:35:12.800491       1 oci_repo.go:649] login(us-west1-docker.pkg.dev): Get "https://us-west1-docker.pkg.dev/v2/": Get "https://us-west1-docker.pkg.dev/v2/token?account=_json_key&client_id=docker&offline_token=true": dial tcp 142.251.2.82:443: i/o timeout (Client.Timeout exceeded while awaiting headers)
+			// These errors I would like retried
+			timeout := 5 * time.Minute
+			maxTries := 2
+			retryOptions := []grpc.CallOption{
+				grpc_retry.WithPerRetryTimeout(timeout),
+				grpc_retry.WithMax(uint(maxTries)),
+				grpc_retry.WithCodes(codes.Internal),
+			}
+
+			hour, minute, second := time.Now().Clock()
+			t.Logf("[%d:%d:%d] Calling GetAvailablePackageSummaries() blocking for up to [%s]...",
+				hour, minute, second, time.Duration(int64(timeout)*int64(maxTries)))
+			resp, err := fluxPluginClient.GetAvailablePackageSummaries(
+				grpcContext,
+				&corev1.GetAvailablePackageSummariesRequest{},
+				retryOptions...)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !tc.unauthenticated {
+				compareAvailablePackageSummaries(t, resp, expected_oci_stefanprodan_podinfo_available_summaries(repoName.Name))
+			} else {
+				compareAvailablePackageSummaries(t, resp, no_available_summaries(repoName.Name))
+				return // nothing more to check
+			}
+
+			hour, minute, second = time.Now().Clock()
+			t.Logf("[%d:%d:%d] Calling GetAvailablePackageVersions() blocking for up to [%s]...",
+				hour, minute, second, time.Duration(int64(timeout)*int64(maxTries)))
+			resp2, err := fluxPluginClient.GetAvailablePackageVersions(
+				grpcContext, &corev1.GetAvailablePackageVersionsRequest{
+					AvailablePackageRef: &corev1.AvailablePackageReference{
+						Context: &corev1.Context{
+							Namespace: "default",
+						},
+						Identifier: repoName.Name + "/podinfo",
+					},
+				},
+				retryOptions...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			compareAvailablePackageVersions(t, resp2, expected_versions_stefanprodan_podinfo)
+
+			hour, minute, second = time.Now().Clock()
+			t.Logf("[%d:%d:%d] Calling GetAvailablePackageDetail(latest version) blocking for up to [%s]...",
+				hour, minute, second, time.Duration(int64(timeout)*int64(maxTries)))
+			resp3, err := fluxPluginClient.GetAvailablePackageDetail(
+				grpcContext,
+				&corev1.GetAvailablePackageDetailRequest{
+					AvailablePackageRef: &corev1.AvailablePackageReference{
+						Context: &corev1.Context{
+							Namespace: "default",
+						},
+						Identifier: repoName.Name + "/podinfo",
+					},
+				},
+				retryOptions...)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			compareAvailablePackageDetail(
+				t,
+				resp3.AvailablePackageDetail,
+				expected_detail_oci_stefanprodan_podinfo(repoName.Name, tc.registryUrl).AvailablePackageDetail)
+
+			// try an older version
+			t.Logf("[%d:%d:%d] Calling GetAvailablePackageDetail(specific version) blocking for up to [%s]...",
+				hour, minute, second, time.Duration(int64(timeout)*int64(maxTries)))
+			resp4, err := fluxPluginClient.GetAvailablePackageDetail(grpcContext,
+				&corev1.GetAvailablePackageDetailRequest{
+					AvailablePackageRef: &corev1.AvailablePackageReference{
+						Context: &corev1.Context{
+							Namespace: "default",
+						},
+						Identifier: repoName.Name + "/podinfo",
+					},
+					PkgVersion: "6.1.6",
+				}, retryOptions...)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			compareAvailablePackageDetail(
+				t,
+				resp4.AvailablePackageDetail,
+				expected_detail_oci_stefanprodan_podinfo_2(repoName.Name, tc.registryUrl).AvailablePackageDetail)
+		})
+	}
+}
+
+func TestKindClusterAvailablePackageEndpointsOCIRepo2Charts(t *testing.T) {
+	fluxPluginClient, _, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := setupHarborForIntegrationTest(t); err != nil {
+		t.Fatal(err)
+	}
+
+	testCases := []struct {
+		testName    string
+		registryUrl string
+		secret      *apiv1.Secret
+	}{
+		{
+			testName:    "Testing [" + harbor_repo_with_2_charts_oci_registry_url + "] with basic auth secret (admin)",
+			registryUrl: harbor_repo_with_2_charts_oci_registry_url,
+			secret: newBasicAuthSecret(types.NamespacedName{
+				Name:      "oci-repo-secret-" + randSeq(rnd, 4),
+				Namespace: "default"},
+				harbor_admin_user,
+				harbor_admin_pwd,
+			),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.testName, func(t *testing.T) {
+			repoName := types.NamespacedName{
+				Name:      "my-podinfo-" + randSeq(rnd, 4),
+				Namespace: "default",
+			}
+
+			secretName := ""
+			if tc.secret != nil {
+				secretName = tc.secret.Name
+
+				if err := kubeCreateSecretAndCleanup(t, tc.secret); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := kubeAddHelmRepositoryAndCleanup(
+				t, repoName, "oci", tc.registryUrl, secretName, 0); err != nil {
+				t.Fatal(err)
+			}
+			// wait until this repo reaches 'Ready'
+			err := kubeWaitUntilHelmRepositoryIsReady(t, repoName)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			adminName := types.NamespacedName{
+				Name:      "test-admin-" + randSeq(rnd, 4),
+				Namespace: "default",
+			}
+
+			grpcContext, err := newGrpcAdminContext(t, adminName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			timeout := 5 * time.Minute
+			maxTries := 2
+			retryOptions := []grpc.CallOption{
+				grpc_retry.WithPerRetryTimeout(timeout),
+				grpc_retry.WithMax(uint(maxTries)),
+				grpc_retry.WithCodes(codes.Internal),
+			}
+
+			hour, minute, second := time.Now().Clock()
+			t.Logf("[%d:%d:%d] Calling GetAvailablePackageSummaries() blocking for up to [%s]...",
+				hour, minute, second, time.Duration(int64(timeout)*int64(maxTries)))
+			resp, err := fluxPluginClient.GetAvailablePackageSummaries(
+				grpcContext,
+				&corev1.GetAvailablePackageSummariesRequest{},
+				retryOptions...)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			compareAvailablePackageSummaries(t, resp, expected_oci_repo_with_2_charts_available_summaries(repoName.Name))
+		})
+	}
+}
+
+// The goal of this integration test is to ensure that when the contents of remote HTTP helm repo is changed,
+// that fact is recorded locally and processed properly (repo/chart cache is updated with latest, etc.)
+func TestKindClusterAddRemovePackageVersionsInHttpRepo(t *testing.T) {
+	fluxPluginPackagesClient, _, rnd, err := checkEnv(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adminAcctName := types.NamespacedName{
+		Name:      "test-add-remove-versions-repo-admin-" + randSeq(rnd, 4),
+		Namespace: "default",
+	}
+	grpcContext, err := newGrpcAdminContext(t, adminAcctName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repoName := types.NamespacedName{
+		Name:      "podinfo",
+		Namespace: "test-" + randSeq(rnd, 4),
+	}
+	if err := kubeCreateNamespaceAndCleanup(t, repoName.Namespace); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = kubeAddHelmRepositoryAndCleanup(t, repoName, "", podinfo_repo_url, "", 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgRef := availableRef(fmt.Sprintf("%s/%s", repoName.Name, "podinfo"), repoName.Namespace)
+
+	// need to wait until repo is indexed by flux plugin
+	const maxWait = 25
+	var pkgDetail *corev1.GetAvailablePackageDetailResponse
+	for i := 0; i <= maxWait; i++ {
+		grpcContext, cancel := context.WithTimeout(grpcContext, defaultContextTimeout)
+		defer cancel()
+
+		pkgDetail, err = fluxPluginPackagesClient.GetAvailablePackageDetail(
+			grpcContext,
+			&corev1.GetAvailablePackageDetailRequest{AvailablePackageRef: pkgRef})
+		if err == nil {
+			break
+		} else if i == maxWait {
+			if repo, err2 := kubeGetHelmRepository(t, repoName); err2 == nil && repo != nil {
+				t.Fatalf("Timed out waiting for available package [%s], last response: %v, last error: [%v],\nhelm repository:%s",
+					pkgRef, pkgDetail, err, common.PrettyPrint(repo))
+			} else {
+				t.Fatalf("Timed out waiting for available package [%s], last response: %v, last error: [%v]",
+					pkgRef, pkgDetail, err)
+			}
+		} else {
+			t.Logf("Waiting 1s for repository [%s] to be indexed, attempt [%d/%d]...", repoName, i+1, maxWait)
+			time.Sleep(1 * time.Second)
+		}
+	}
+	compareAvailablePackageDetail(
+		t,
+		pkgDetail.AvailablePackageDetail,
+		expected_detail_podinfo(repoName.Name, repoName.Namespace).AvailablePackageDetail)
+
+	podName, err := getFluxPluginTestdataPodName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("podName = [%s]", podName)
+
+	if err = kubeCopyFileToPod(
+		t,
+		testTgz("podinfo-6.0.3.tgz"),
+		*podName,
+		"/usr/share/nginx/html/podinfo/podinfo-6.0.3.tgz"); err != nil {
+		t.Fatal(err)
+	}
+	if err = kubeCopyFileToPod(
+		t,
+		testYaml("podinfo-index-updated.yaml"),
+		*podName,
+		"/usr/share/nginx/html/podinfo/index.yaml"); err != nil {
+		t.Fatal(err)
+	}
+
+	SleepWithCountdown(t, 20)
+
+	pkgDetail, err = fluxPluginPackagesClient.GetAvailablePackageDetail(
+		grpcContext,
+		&corev1.GetAvailablePackageDetailRequest{AvailablePackageRef: pkgRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compareAvailablePackageDetail(
+		t,
+		pkgDetail.AvailablePackageDetail,
+		expected_detail_podinfo_after_update_1(repoName.Name, repoName.Namespace).AvailablePackageDetail)
+
+	if err = kubeCopyFileToPod(
+		t,
+		testYaml("podinfo-index.yaml"),
+		*podName,
+		"/usr/share/nginx/html/podinfo/index.yaml"); err != nil {
+		t.Logf("Error reverting to previous podinfo index: %v", err)
+	}
+
+	SleepWithCountdown(t, 20)
+
+	pkgDetail, err = fluxPluginPackagesClient.GetAvailablePackageDetail(
+		grpcContext,
+		&corev1.GetAvailablePackageDetailRequest{AvailablePackageRef: pkgRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compareAvailablePackageDetail(
+		t,
+		pkgDetail.AvailablePackageDetail,
+		expected_detail_podinfo(repoName.Name, repoName.Namespace).AvailablePackageDetail)
+
+	_, err = fluxPluginPackagesClient.GetAvailablePackageDetail(
+		grpcContext,
+		&corev1.GetAvailablePackageDetailRequest{
+			AvailablePackageRef: pkgRef,
+			PkgVersion:          "6.0.3",
+		})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("Expected Internal, got: %v", err)
+	}
+}

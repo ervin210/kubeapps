@@ -1,5 +1,8 @@
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import AvailablePackageMaintainers from "components/PackageHeader/AvailablePackageMaintainers";
-import { AvailablePackageDetail } from "gen/kubeappsapis/core/packages/v1alpha1/packages";
+import { AvailablePackageDetail } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 
 interface AvailablePackageDetailExcerptProps {
   pkg?: AvailablePackageDetail;

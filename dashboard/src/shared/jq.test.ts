@@ -1,5 +1,8 @@
+// Copyright 2021-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { toFilterRule, toParams } from "./jq";
-import { IAppRepositoryFilter } from "./types";
+import { IPkgRepositoryFilter } from "./types";
 
 describe("toFilterRule", () => {
   const tests = [
@@ -8,7 +11,7 @@ describe("toFilterRule", () => {
       names: "nginx",
       regex: false,
       exclude: false,
-      expected: { jq: ".name == $var0", variables: { $var0: "nginx" } } as IAppRepositoryFilter,
+      expected: { jq: ".name == $var0", variables: { $var0: "nginx" } } as IPkgRepositoryFilter,
     },
     {
       description: "rule with a several names",
@@ -18,7 +21,7 @@ describe("toFilterRule", () => {
       expected: {
         jq: ".name == $var0 or .name == $var1",
         variables: { $var0: "nginx", $var1: "jenkins" },
-      } as IAppRepositoryFilter,
+      } as IPkgRepositoryFilter,
     },
     {
       description: "rule with a regex",
@@ -28,7 +31,7 @@ describe("toFilterRule", () => {
       expected: {
         jq: ".name | test($var)",
         variables: { $var: ".*foo.*" },
-      } as IAppRepositoryFilter,
+      } as IPkgRepositoryFilter,
     },
     {
       description: "negated rule",
@@ -38,7 +41,7 @@ describe("toFilterRule", () => {
       expected: {
         jq: ".name == $var0 | not",
         variables: { $var0: "nginx" },
-      } as IAppRepositoryFilter,
+      } as IPkgRepositoryFilter,
     },
     {
       description: "negated regex",
@@ -48,7 +51,7 @@ describe("toFilterRule", () => {
       expected: {
         jq: ".name | test($var) | not",
         variables: { $var: "nginx" },
-      } as IAppRepositoryFilter,
+      } as IPkgRepositoryFilter,
     },
   ];
   tests.forEach(t => {
@@ -62,7 +65,7 @@ describe("toParams", () => {
   const tests = [
     {
       description: "rule with a name",
-      rule: { jq: ".name == $var0", variables: { $var0: "nginx" } } as IAppRepositoryFilter,
+      rule: { jq: ".name == $var0", variables: { $var0: "nginx" } } as IPkgRepositoryFilter,
       expected: { names: "nginx", regex: false, exclude: false },
     },
     {
@@ -70,7 +73,7 @@ describe("toParams", () => {
       rule: {
         jq: ".name == $var0 or .name == $var1",
         variables: { $var0: "nginx", $var1: "jenkins" },
-      } as IAppRepositoryFilter,
+      } as IPkgRepositoryFilter,
       expected: {
         names: "nginx, jenkins",
         regex: false,
@@ -82,7 +85,7 @@ describe("toParams", () => {
       rule: {
         jq: ".name | test($var)",
         variables: { $var: ".*foo.*" },
-      } as IAppRepositoryFilter,
+      } as IPkgRepositoryFilter,
       expected: {
         names: ".*foo.*",
         regex: true,
@@ -94,7 +97,7 @@ describe("toParams", () => {
       rule: {
         jq: ".name == $var0 | not",
         variables: { $var0: "nginx" },
-      } as IAppRepositoryFilter,
+      } as IPkgRepositoryFilter,
       expected: {
         names: "nginx",
         regex: false,
@@ -106,7 +109,7 @@ describe("toParams", () => {
       rule: {
         jq: ".name | test($var) | not",
         variables: { $var: "nginx" },
-      } as IAppRepositoryFilter,
+      } as IPkgRepositoryFilter,
       expected: {
         names: "nginx",
         regex: true,

@@ -1,8 +1,14 @@
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import {
   AvailablePackageDetail,
   InstalledPackageDetail,
-} from "gen/kubeappsapis/core/packages/v1alpha1/packages";
+  InstalledPackageStatus_StatusReason,
+} from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 import PackageUpdateInfo from "./PackageUpdateInfo";
+import { getAppStatusLabel } from "shared/utils";
+
 interface IPackageInfoProps {
   installedPackageDetail: InstalledPackageDetail;
   availablePackageDetail?: AvailablePackageDetail;
@@ -13,6 +19,17 @@ function PackageInfo({ installedPackageDetail, availablePackageDetail }: IPackag
     <section className="left-menu">
       {installedPackageDetail && (
         <>
+          {installedPackageDetail.status && (
+            <section className="left-menu-subsection" aria-labelledby="packageinfo-versions">
+              <div>
+                Status: <strong>{getAppStatusLabel(installedPackageDetail.status.reason)}</strong>
+              </div>
+              {installedPackageDetail.status.reason !==
+                InstalledPackageStatus_StatusReason.INSTALLED && (
+                <div>{installedPackageDetail.status.userReason}</div>
+              )}
+            </section>
+          )}
           <section className="left-menu-subsection" aria-labelledby="packageinfo-versions">
             <h5 className="left-menu-subsection-title" id="packageinfo-versions">
               Versions
@@ -46,7 +63,7 @@ function PackageInfo({ installedPackageDetail, availablePackageDetail }: IPackag
                   </div>
                   <div>
                     Interval:{" "}
-                    <strong>{installedPackageDetail.reconciliationOptions.interval} seconds</strong>
+                    <strong>{installedPackageDetail.reconciliationOptions.interval}</strong>
                   </div>
                 </>
               </div>

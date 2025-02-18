@@ -1,3 +1,6 @@
+// Copyright 2020-2024 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 .drawer {
   position: absolute;
   right: 0;
@@ -30,12 +33,9 @@
 .drawer-backdrop {
   position: absolute;
   z-index: 1015;
-  top: 3rem;
-  right: 0;
-  bottom: 0;
-  left: 0;
   height: calc(100vh - 3rem);
   background-color: var(--cds-global-color-gray-900, #313131);
+  inset: 3rem 0 0;
   opacity: 0.85;
 }
 
@@ -94,7 +94,9 @@ div .dropdown-menu .dropdown-divider {
   &:hover {
     opacity: 1;
     transform: translateY(-0.1rem);
-    transition: border 0.2s ease, transform 0.2s;
+    transition:
+      border 0.2s ease,
+      transform 0.2s;
   }
 }
 
@@ -117,6 +119,7 @@ div .dropdown-menu .dropdown-divider {
   margin-bottom: 0.5rem;
   font-size: smaller;
   text-align: end;
+  white-space: normal;
 
   & a:link {
     color: var(--cds-global-color-blue-400, #2ec0ff);
@@ -135,7 +138,9 @@ div .dropdown-menu .dropdown-divider {
 .transition-drawer-enter-active {
   opacity: 1;
   transform: translateX(0);
-  transition: opacity 300ms, transform 300ms;
+  transition:
+    opacity 300ms,
+    transform 300ms;
 }
 
 .transition-drawer-exit {
@@ -145,7 +150,9 @@ div .dropdown-menu .dropdown-divider {
 .transition-drawer-exit-active {
   opacity: 0;
   transform: translateX(15rem);
-  transition: opacity 300ms, transform 300ms;
+  transition:
+    opacity 300ms,
+    transform 300ms;
 }
 
 .toggle-label-text {

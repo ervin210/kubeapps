@@ -1,20 +1,24 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsButton } from "@cds/react/button";
 import { CdsIcon } from "@cds/react/icon";
 import actions from "actions";
+import AlertGroup from "components/AlertGroup";
 import { filtersToQuery } from "components/Catalog/Catalog";
+import Column from "components/Column";
 import FilterGroup from "components/FilterGroup/FilterGroup";
-import Alert from "components/js/Alert";
-import Column from "components/js/Column";
-import Row from "components/js/Row";
-import { push } from "connected-react-router";
+import LoadingWrapper from "components/LoadingWrapper";
+import Row from "components/Row";
+import { usePush } from "hooks/push";
 import { flatten, get, intersection, uniq, without } from "lodash";
-import { ParsedQs } from "qs";
-import { useEffect, useState } from "react";
+import qs, { ParsedQs } from "qs";
+import { useEffect, useMemo, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
+import { useLocation } from "react-router-dom";
 import { IPackageManifest, IPackageManifestStatus, IStoreState } from "shared/types";
 import { app } from "shared/url";
 import { escapeRegExp } from "shared/utils";
-import LoadingWrapper from "../LoadingWrapper/LoadingWrapper";
 import {
   AUTO_PILOT,
   BASIC_INSTALL,
@@ -29,8 +33,6 @@ import OperatorItems from "./OperatorItems";
 import "./OperatorList.css";
 
 export interface IOperatorListProps {
-  cluster: string;
-  namespace: string;
   filter: ParsedQs;
 }
 
@@ -65,22 +67,37 @@ export const filterNames = {
 };
 
 function initialFilterState() {
-  const result = {};
+  const result: { [index: string]: any } = {};
   Object.values(filterNames).forEach(f => (result[f] = []));
   return result;
 }
 
-export default function OperatorList({
-  cluster,
-  namespace,
-  filter: propsFilter,
-}: IOperatorListProps) {
+export default function OperatorList() {
   const dispatch = useDispatch();
   const [filters, setFilters] = useState(initialFilterState());
+  const location = useLocation();
+  const propsFilter = useMemo(
+    () => qs.parse(location.search, { ignoreQueryPrefix: true }),
+    [location.search],
+  );
+  const {
+    operators: {
+      operators,
+      isFetching,
+      errors: {
+        operator: { fetch: opError },
+        subscriptions: { fetch: subsError },
+      },
+      subscriptions,
+      isOLMInstalled,
+    },
+    clusters: { currentCluster: cluster, clusters },
+  } = useSelector((state: IStoreState) => state);
+  const namespace = clusters[cluster].currentNamespace;
 
   useEffect(() => {
     const tmpStrRegex = /__/g;
-    const newFilters = {};
+    const newFilters: { [index: string]: any } = {};
     Object.keys(propsFilter).forEach(filter => {
       const filterValue = propsFilter[filter]?.toString() || "";
       newFilters[filter] = filterValue.split(",").map(a => a.replace(tmpStrRegex, ","));
@@ -91,8 +108,9 @@ export default function OperatorList({
     });
   }, [propsFilter]);
 
+  const push = usePush();
   const pushFilters = (newFilters: any) => {
-    dispatch(push(app.operators.list(cluster, namespace) + filtersToQuery(newFilters)));
+    push(app.operators.list(cluster, namespace) + filtersToQuery(newFilters));
   };
   const addFilter = (type: string, value: string) => {
     pushFilters({
@@ -129,18 +147,6 @@ export default function OperatorList({
     dispatch(actions.operators.checkOLMInstalled(cluster, namespace));
   }, [dispatch, cluster, namespace]);
 
-  const {
-    operators: {
-      operators,
-      isFetching,
-      errors: {
-        operator: { fetch: opError },
-        subscriptions: { fetch: subsError },
-      },
-      subscriptions,
-      isOLMInstalled,
-    },
-  } = useSelector((state: IStoreState) => state);
   const error = opError || subsError;
 
   useEffect(() => {
@@ -205,19 +211,18 @@ export default function OperatorList({
           />
         }
       />
-      <Alert theme="warning">
-        <div>
-          Operators integration is under heavy development and currently in beta state. If you find
-          an issue please report it{" "}
-          <a
-            target="_blank"
-            rel="noopener noreferrer"
-            href="https://github.com/kubeapps/kubeapps/issues"
-          >
-            here.
-          </a>
-        </div>
-      </Alert>
+      <AlertGroup status="warning">
+        Operators integration is under heavy development and currently in beta state. If you find an
+        issue, please{" "}
+        <a
+          target="_blank"
+          rel="noopener noreferrer"
+          href="https://github.com/vmware-tanzu/kubeapps/issues/new"
+        >
+          report it here
+        </a>
+        .
+      </AlertGroup>
       <LoadingWrapper
         className="margin-t-xxl"
         loadingText="Fetching Operators..."
@@ -228,9 +233,9 @@ export default function OperatorList({
         ) : (
           <>
             {error && (
-              <Alert theme="danger">
-                An error occurred while fetching Operators: {error.message}
-              </Alert>
+              <AlertGroup status="danger">
+                An error occurred while fetching Operators: {error.message}.
+              </AlertGroup>
             )}
             {operators.length === 0 ? (
               <div className="section-not-found">

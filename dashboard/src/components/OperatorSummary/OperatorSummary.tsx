@@ -1,4 +1,7 @@
-import Alert from "components/js/Alert";
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import AlertGroup from "components/AlertGroup";
 import LoadingWrapper from "components/LoadingWrapper/LoadingWrapper";
 import CapabiliyLevel, { BASIC_INSTALL } from "components/OperatorView/OperatorCapabilityLevel";
 import { get } from "lodash";
@@ -21,10 +24,10 @@ export default function OperatorSummary() {
     const channel = Operators.getDefaultChannel(operator);
     if (!channel || !channel.currentCSVDesc) {
       return (
-        <Alert theme="danger">
+        <AlertGroup status="danger">
           Operator {operator.metadata.name} doesn't define a valid channel. This is needed to
           extract required info.
-        </Alert>
+        </AlertGroup>
       );
     }
     const { currentCSVDesc } = channel;

@@ -1,30 +1,24 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import actions from "actions";
-import Alert from "components/js/Alert";
-import { InstalledPackageReference } from "gen/kubeappsapis/core/packages/v1alpha1/packages";
-import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins";
+import AlertGroup from "components/AlertGroup";
+import LoadingWrapper from "components/LoadingWrapper";
+import { InstalledPackageReference } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
+import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins_pb";
 import { useEffect, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import * as ReactRouter from "react-router-dom";
 import { Action } from "redux";
 import { ThunkDispatch } from "redux-thunk";
 import { FetchError, IStoreState } from "shared/types";
-import LoadingWrapper from "../LoadingWrapper/LoadingWrapper";
 import SelectRepoForm from "../SelectRepoForm/SelectRepoForm";
 import UpgradeForm from "../UpgradeForm/UpgradeForm";
-
-interface IRouteParams {
-  cluster: string;
-  namespace: string;
-  releaseName: string;
-  pluginName: string;
-  pluginVersion: string;
-  version?: string;
-}
 
 function AppUpgrade() {
   const dispatch: ThunkDispatch<IStoreState, null, Action> = useDispatch();
   const { cluster, namespace, releaseName, pluginName, pluginVersion, version } =
-    ReactRouter.useParams() as IRouteParams;
+    ReactRouter.useParams();
 
   const {
     apps: {
@@ -42,9 +36,9 @@ function AppUpgrade() {
 
   // Initial fetch using the params in the URL
   useEffect(() => {
-    dispatch(actions.packages.resetSelectedAvailablePackageDetail());
+    dispatch(actions.availablepackages.resetSelectedAvailablePackageDetail());
     dispatch(
-      actions.apps.getApp({
+      actions.installedpackages.getInstalledPackage({
         context: { cluster: cluster, namespace: namespace },
         identifier: releaseName,
         plugin: pluginObj,
@@ -53,7 +47,9 @@ function AppUpgrade() {
   }, [dispatch, cluster, namespace, pluginObj, releaseName]);
 
   if (error && error.constructor === FetchError) {
-    return <Alert theme="danger">Unable to retrieve the current app: {error.message}</Alert>;
+    return (
+      <AlertGroup status="danger">Unable to retrieve the current app: {error.message}.</AlertGroup>
+    );
   }
 
   if (isFetching || !installedAppInstalledPackageDetail) {
@@ -78,8 +74,8 @@ function AppUpgrade() {
   }
   return (
     <SelectRepoForm
-      cluster={cluster}
-      namespace={namespace}
+      cluster={cluster || ""}
+      namespace={namespace || ""}
       app={installedAppInstalledPackageDetail}
     />
   );

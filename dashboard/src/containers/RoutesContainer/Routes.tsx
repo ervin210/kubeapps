@@ -1,36 +1,29 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import AlertGroup from "components/AlertGroup";
+import ApiDocs from "components/ApiDocs";
 import AppList from "components/AppList/AppList";
 import AppUpgrade from "components/AppUpgrade";
 import AppView from "components/AppView";
 import Catalog from "components/Catalog/Catalog";
-import PackageView from "components/PackageHeader";
-import AppRepoList from "components/Config/AppRepoList";
+import PkgRepoList from "components/Config/PkgRepoList/PkgRepoList";
 import DeploymentForm from "components/DeploymentForm";
 import LoadingWrapper from "components/LoadingWrapper";
-import React from "react";
-import {
-  Redirect,
-  Route,
-  RouteChildrenProps,
-  RouteComponentProps,
-  RouteProps,
-  Switch,
-} from "react-router-dom";
+import LoginForm from "components/LoginForm";
+import NotFound from "components/NotFound";
+import OperatorInstance from "components/OperatorInstance";
+import OperatorInstanceForm from "components/OperatorInstanceForm";
+import OperatorInstanceUpdateForm from "components/OperatorInstanceUpdateForm";
+import OperatorList from "components/OperatorList";
+import OperatorNew from "components/OperatorNew";
+import OperatorView from "components/OperatorView";
+import PackageView from "components/PackageHeader";
+import RequireAuthentication from "components/RequireAuthentication";
+import { useSelector } from "react-redux";
+import { Navigate, Route, Routes } from "react-router-dom";
+import { IStoreState } from "shared/types";
 import { app } from "shared/url";
-import ApiDocs from "../../components/ApiDocs";
-import NotFound from "../../components/NotFound";
-// TODO(andresmgot): Containers should be no longer needed, replace them when possible
-import LoginFormContainer from "../../containers/LoginFormContainer";
-import OperatorInstanceCreateContainer from "../../containers/OperatorInstanceCreateContainer";
-import OperatorInstanceUpdateContainer from "../../containers/OperatorInstanceUpdateContainer";
-import OperatorInstanceViewContainer from "../../containers/OperatorInstanceViewContainer";
-import OperatorNewContainer from "../../containers/OperatorNewContainer";
-import OperatorsListContainer from "../../containers/OperatorsListContainer";
-import OperatorViewContainer from "../../containers/OperatorViewContainer";
-import PrivateRouteContainer from "../../containers/PrivateRouteContainer";
-import { IFeatureFlags } from "shared/Config";
-import AlertGroup from "components/AlertGroup";
-
-type IRouteComponentPropsAndRouteProps = RouteProps & RouteComponentProps<any>;
 
 const privateRoutes = {
   "/c/:cluster/ns/:namespace/apps": AppList,
@@ -48,84 +41,95 @@ const privateRoutes = {
     PackageView,
   "/c/:cluster/ns/:namespace/packages/:pluginName/:pluginVersion/:packageCluster/:packageNamespace/:packageId/versions/:packageVersion":
     PackageView,
-  "/c/:cluster/ns/:namespace/config/repos": AppRepoList,
+  "/c/:cluster/ns/:namespace/config/repos": PkgRepoList,
   "/docs": ApiDocs,
 } as const;
 
 const operatorsRoutes = {
-  "/c/:cluster/ns/:namespace/operators": OperatorsListContainer,
-  "/c/:cluster/ns/:namespace/operators/:operator": OperatorViewContainer,
-  "/c/:cluster/ns/:namespace/operators/new/:operator": OperatorNewContainer,
-  "/c/:cluster/ns/:namespace/operators-instances/new/:csv/:crd": OperatorInstanceCreateContainer,
-  "/c/:cluster/ns/:namespace/operators-instances/:csv/:crd/:instanceName":
-    OperatorInstanceViewContainer,
+  "/c/:cluster/ns/:namespace/operators": OperatorList,
+  "/c/:cluster/ns/:namespace/operators/:operator": OperatorView,
+  "/c/:cluster/ns/:namespace/operators/new/:operator": OperatorNew,
+  "/c/:cluster/ns/:namespace/operators-instances/new/:csv/:crd": OperatorInstanceForm,
+  "/c/:cluster/ns/:namespace/operators-instances/:csv/:crd/:instanceName": OperatorInstance,
   "/c/:cluster/ns/:namespace/operators-instances/:csv/:crd/:instanceName/update":
-    OperatorInstanceUpdateContainer,
+    OperatorInstanceUpdateForm,
 } as const;
 
 const unsupportedRoutes = {
-  "/c/:cluster/ns/:namespace/operators*":
+  "/c/:cluster/ns/:namespace/operators/*":
+    "Operators support has been deactivated by default for Kubeapps. It can be enabled in values configuration.",
+  "/c/:cluster/ns/:namespace/operators-instances/*":
     "Operators support has been deactivated by default for Kubeapps. It can be enabled in values configuration.",
 } as const;
 
-// Public routes that don't require authentication
-const routes = {
-  "/login": LoginFormContainer,
-} as const;
-
-interface IRoutesProps extends IRouteComponentPropsAndRouteProps {
-  cluster: string;
-  currentNamespace: string;
-  authenticated: boolean;
-  featureFlags: IFeatureFlags;
-}
-
-class Routes extends React.Component<IRoutesProps> {
-  public render() {
-    return (
-      <Switch>
-        <Route exact={true} path="/" render={this.rootNamespacedRedirect} />
-        {Object.entries(routes).map(([route, component]) => (
-          <Route key={route} exact={true} path={route} component={component} />
-        ))}
-        {Object.entries(privateRoutes).map(([route, component]) => (
-          <PrivateRouteContainer key={route} exact={true} path={route} component={component} />
-        ))}
-        {this.props.featureFlags?.operators &&
-          Object.entries(operatorsRoutes).map(([route, component]) => (
-            <PrivateRouteContainer key={route} exact={true} path={route} component={component} />
-          ))}
-        {!this.props.featureFlags?.operators &&
-          Object.entries(unsupportedRoutes).map(([route]) => (
-            <Route key={route} exact={true} path={route} render={this.unsupportedMessage} />
-          ))}
-        {/* If the route doesn't match any expected path redirect to a 404 page  */}
-        <Route component={NotFound} />
-      </Switch>
-    );
-  }
-  private rootNamespacedRedirect = () => {
-    if (this.props.authenticated) {
-      if (!this.props.cluster || !this.props.currentNamespace) {
+function AppRoutes() {
+  const {
+    config: { featureFlags },
+    clusters: { currentCluster: cluster, clusters },
+    auth: { authenticated },
+  } = useSelector((state: IStoreState) => state);
+  const currentNamespace = clusters[cluster].currentNamespace;
+  const rootNamespacedRedirect = () => {
+    if (authenticated) {
+      if (!cluster || !currentNamespace) {
         return <LoadingWrapper className="margin-t-xxl" loadingText="Fetching Cluster Info..." />;
       }
-      return (
-        <Redirect
-          to={{ pathname: app.apps.list(this.props.cluster, this.props.currentNamespace) }}
-        />
-      );
+      return <Navigate replace to={{ pathname: app.apps.list(cluster, currentNamespace) }} />;
     }
     // There is not a default namespace, redirect to login page
-    return <Redirect to={{ pathname: "/login" }} />;
+    return <Navigate replace to={{ pathname: "/login" }} />;
   };
-  private unsupportedMessage = (props: RouteChildrenProps) => {
-    const message = props.match ? unsupportedRoutes[props.match.path] : "Generic message";
-    return (
-      <div className="margin-t-sm">
-        <AlertGroup status="warning">{message}</AlertGroup>
-      </div>
-    );
-  };
+  return (
+    <Routes>
+      <Route path="/" element={rootNamespacedRedirect()} />
+      <Route key="/login" path="/login" element={<LoginForm />} />
+      {Object.entries(privateRoutes).map(([route, component]) => {
+        const Component = component;
+        return (
+          <Route
+            key={route}
+            path={route}
+            element={
+              <RequireAuthentication>
+                <Component />
+              </RequireAuthentication>
+            }
+          />
+        );
+      })}
+      {featureFlags?.operators &&
+        Object.entries(operatorsRoutes).map(([route, component]) => {
+          const Component = component;
+          return (
+            <Route
+              key={route}
+              path={route}
+              element={
+                <RequireAuthentication>
+                  <Component />
+                </RequireAuthentication>
+              }
+            />
+          );
+        })}
+      {!featureFlags?.operators &&
+        Object.entries(unsupportedRoutes).map(([route, message]) => {
+          return (
+            <Route
+              key={route}
+              path={route}
+              element={
+                <div className="margin-t-sm">
+                  <AlertGroup status="warning">{message}</AlertGroup>
+                </div>
+              }
+            />
+          );
+        })}
+      {/* If the route doesn't match any expected path redirect to a 404 page  */}
+      <Route path="*" element={<NotFound />} />
+    </Routes>
+  );
 }
 
-export default Routes;
+export default AppRoutes;

@@ -1,4 +1,7 @@
-import MultiCheckbox from "components/js/MultiCheckbox";
+// Copyright 2020-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import MultiCheckbox from "components/MultiCheckbox";
 import React from "react";
 
 interface IFilterGroupProps {
@@ -7,12 +10,14 @@ interface IFilterGroupProps {
   currentFilters: string[];
   onAddFilter: (type: string, value: string) => void;
   onRemoveFilter: (etype: string, value: string) => void;
+  disabled?: boolean;
 }
 
 function FilterGroup({
   name,
   currentFilters,
   options,
+  disabled = false,
   onAddFilter,
   onRemoveFilter,
 }: IFilterGroupProps) {
@@ -31,9 +36,9 @@ function FilterGroup({
     <MultiCheckbox
       name={name}
       options={options}
-      span={1}
       value={currentFilters}
       onChange={onChange}
+      disabled={disabled}
     />
   );
 }

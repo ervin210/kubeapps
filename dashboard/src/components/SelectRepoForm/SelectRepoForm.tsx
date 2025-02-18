@@ -1,13 +1,16 @@
+// Copyright 2019-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsButton } from "@cds/react/button";
 import actions from "actions";
-import Alert from "components/js/Alert";
-import { InstalledPackageDetail } from "gen/kubeappsapis/core/packages/v1alpha1/packages";
+import AlertGroup from "components/AlertGroup";
+import LoadingWrapper from "components/LoadingWrapper";
+import { InstalledPackageDetail } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 import { useEffect, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Link } from "react-router-dom";
 import { IStoreState } from "shared/types";
 import * as url from "shared/url";
-import LoadingWrapper from "../LoadingWrapper/LoadingWrapper";
 import "./SelectRepoForm.css";
 
 interface ISelectRepoFormProps {
@@ -21,34 +24,49 @@ function SelectRepoForm({ cluster, namespace, app }: ISelectRepoFormProps) {
   const {
     repos: {
       isFetching,
-      repos,
-      repo,
+      reposSummaries: repos,
+      repoDetail: repo,
       errors: { fetch: fetchError },
     },
     packages: {
       selected: { error: packageError },
     },
-    config: { kubeappsNamespace, kubeappsCluster },
+    config: { kubeappsNamespace, kubeappsCluster, helmGlobalNamespace, carvelGlobalNamespace },
   } = useSelector((state: IStoreState) => state);
 
-  const [userRepoName, setUserRepoName] = useState(repo?.metadata?.name ?? "");
-  const [userRepoNamespace, setUserRepoNamepace] = useState(repo?.metadata?.namespace ?? "");
-
+  const [userRepoName, setUserRepoName] = useState(repo?.name ?? "");
+  const [userRepoNamespace, setUserRepoNamespace] = useState(
+    repo.packageRepoRef?.context?.namespace ?? "",
+  );
+  // We do not currently support package repositories on additional clusters.
+  const supportedCluster = cluster === kubeappsCluster;
   useEffect(() => {
-    if (namespace !== kubeappsNamespace) {
-      // Normal namespace, show local and global repos
-      dispatch(actions.repos.fetchRepos(namespace, true));
-    } else {
-      // Global namespace, show global repos only
-      dispatch(actions.repos.fetchRepos(kubeappsNamespace));
+    if (
+      !namespace ||
+      !supportedCluster ||
+      [helmGlobalNamespace, carvelGlobalNamespace].includes(namespace)
+    ) {
+      // All Namespaces. Global namespace or other cluster, show global repos only
+      dispatch(actions.repos.fetchRepoSummaries(""));
+      return () => {};
     }
-  }, [dispatch, namespace, kubeappsNamespace]);
+    // In other case, fetch global and namespace repos
+    dispatch(actions.repos.fetchRepoSummaries(namespace, true));
+    return () => {};
+  }, [
+    dispatch,
+    namespace,
+    kubeappsNamespace,
+    helmGlobalNamespace,
+    carvelGlobalNamespace,
+    supportedCluster,
+  ]);
 
   const handleRepoNameChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     if (e.target.value) {
       const [ns, name] = e.target.value.split("/");
       setUserRepoName(name);
-      setUserRepoNamepace(ns);
+      setUserRepoNamespace(ns);
     }
   };
 
@@ -61,34 +79,39 @@ function SelectRepoForm({ cluster, namespace, app }: ISelectRepoFormProps) {
   };
 
   const findRepo = (ns: string, name: string) => {
-    return repos.find(r => r.metadata.name === name && r.metadata.namespace === ns);
+    return repos.find(r => r.name === name && r.packageRepoRef?.context?.namespace === ns);
   };
 
   const getRepoURL = (ns: string, name: string) => {
     const r = findRepo(ns, name);
-    return r && r.spec ? r.spec.url : "";
+    return r?.url || "";
   };
 
   return (
     <LoadingWrapper
       className="margin-t-xxl"
-      loadingText="Fetching Application Repositories..."
+      loadingText="Fetching Package Repositories..."
       loaded={!isFetching}
     >
-      {fetchError && <Alert theme="danger">An error occurred: {fetchError.message}</Alert>}
+      {fetchError && (
+        <AlertGroup status="danger">An error occurred: {fetchError.message}.</AlertGroup>
+      )}
       {!fetchError && repos.length === 0 && (
-        <Alert theme="warning">
-          <h5>Repositories not found. </h5>
+        <AlertGroup status="warning">
+          No repositories found.
+          <br />
           Manage your repositories in Kubeapps by visiting the{" "}
-          <Link to={url.app.config.apprepositories(cluster, namespace)}>
-            App repositories configuration
+          <Link to={url.app.config.pkgrepositories(cluster, namespace)}>
+            Package Repositories configuration
           </Link>{" "}
           page.
-        </Alert>
+        </AlertGroup>
       )}
       {repos.length > 0 && (
         <div className="select-repo-form">
-          {packageError && <Alert theme="danger">An error occurred: {packageError.message}</Alert>}
+          {packageError && (
+            <AlertGroup status="danger">An error occurred: {packageError.message}.</AlertGroup>
+          )}
           <h2>
             Select the source repository of '{app?.availablePackageRef?.identifier ?? app?.name}'
           </h2>
@@ -105,10 +128,10 @@ function SelectRepoForm({ cluster, namespace, app }: ISelectRepoFormProps) {
             >
               {!userRepoName && <option key="" value="" />}
               {repos.map(r => {
-                const value = `${r.metadata.namespace}/${r.metadata.name}`;
+                const value = `${r.packageRepoRef?.context?.namespace}/${r.name}`;
                 return (
                   <option key={value} value={value}>
-                    {value} ({getRepoURL(r.metadata.namespace, r.metadata.name)})
+                    {value} ({getRepoURL(r.packageRepoRef?.context?.namespace || "", r.name)})
                   </option>
                 );
               })}
@@ -121,7 +144,7 @@ function SelectRepoForm({ cluster, namespace, app }: ISelectRepoFormProps) {
             {" "}
             * If the repository containing '{app?.availablePackageRef?.identifier ?? app?.name}' is
             not in the list, add it{" "}
-            <Link to={url.app.config.apprepositories(cluster, namespace)}>here</Link>.{" "}
+            <Link to={url.app.config.pkgrepositories(cluster, namespace)}>here</Link>.{" "}
           </p>
         </div>
       )}

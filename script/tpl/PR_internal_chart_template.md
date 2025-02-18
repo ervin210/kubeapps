@@ -1,10 +1,10 @@
 ### Description of the change
 
-This is an automatic PR for synchronizing the changes performed externally at the [bitnami/kubeapps official chart](https://github.com/bitnami/charts/tree/master/bitnami/kubeapps) to the Kubeapps development version.
+This is an automatic PR for synchronizing the changes performed externally at the [bitnami/kubeapps official chart](https://github.com/bitnami/charts/tree/main/bitnami/kubeapps) to the Kubeapps development version.
 
 ### Benefits
 
-The Kubeapps [development chart](https://github.com/kubeapps/kubeapps/tree/main/chart/kubeapps) will get the newest changes, including image version updates and other updates.
+The Kubeapps [development chart](https://github.com/vmware-tanzu/kubeapps/tree/main/chart/kubeapps) will get the newest changes, including image version updates and other updates.
 
 ### Possible drawbacks
 

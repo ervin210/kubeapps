@@ -1,6 +1,9 @@
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsIcon } from "@cds/react/icon";
-import Alert from "components/js/Alert";
-import { InstalledPackageDetail } from "gen/kubeappsapis/core/packages/v1alpha1/packages";
+import AlertGroup from "components/AlertGroup";
+import { InstalledPackageDetail } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 import { Link } from "react-router-dom";
 import { app as appURL } from "shared/url";
 interface IPackageUpdateInfoProps {
@@ -38,8 +41,9 @@ export default function PackageUpdateInfo({ installedPackageDetail }: IPackageUp
   }
   // App is up to date
   return alertContent && installedPackageDetail?.installedPackageRef ? (
-    <Alert>
+    <AlertGroup status="info" closable={false}>
       {alertContent}
+      <br />
       <Link
         to={appURL.apps.upgradeTo(
           installedPackageDetail.installedPackageRef,
@@ -48,7 +52,7 @@ export default function PackageUpdateInfo({ installedPackageDetail }: IPackageUp
       >
         Update Now
       </Link>
-    </Alert>
+    </AlertGroup>
   ) : (
     <div className="color-icon-success">
       <CdsIcon shape="check-circle" size="md" solid={true} /> Up to date

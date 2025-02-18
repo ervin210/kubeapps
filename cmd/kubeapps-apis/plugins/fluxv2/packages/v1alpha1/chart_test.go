@@ -1,41 +1,29 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2024 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
-	redismock "github.com/go-redis/redismock/v8"
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
-	corev1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	plugins "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/plugins/fluxv2/packages/v1alpha1/cache"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/plugins/fluxv2/packages/v1alpha1/common"
-	httpclient "github.com/kubeapps/kubeapps/pkg/http-client"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/bufbuild/connect-go"
+	fluxmeta "github.com/fluxcd/pkg/apis/meta"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	sourcev1beta2 "github.com/fluxcd/source-controller/api/v1beta2"
+	"github.com/go-redis/redismock/v8"
+	corev1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/fluxv2/packages/v1alpha1/cache"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/fluxv2/packages/v1alpha1/common"
+	httpclient "github.com/vmware-tanzu/kubeapps/pkg/http-client"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -105,15 +93,7 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 
 	// these will be used further on for TLS-related scenarios. Init
 	// byte arrays up front so they can be re-used in multiple places later
-	var ca, pub, priv []byte
-	var err error
-	if ca, err = ioutil.ReadFile("testdata/rootCA.crt"); err != nil {
-		t.Fatalf("%+v", err)
-	} else if pub, err = ioutil.ReadFile("testdata/crt.pem"); err != nil {
-		t.Fatalf("%+v", err)
-	} else if priv, err = ioutil.ReadFile("testdata/key.pem"); err != nil {
-		t.Fatalf("%+v", err)
-	}
+	ca, pub, priv := getCertsForTesting(t)
 
 	for _, tc := range testCases {
 		t.Run(tc.testName, func(t *testing.T) {
@@ -124,7 +104,7 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 			requestChartUrl := ""
 
 			// these will be used later in a few places
-			opts := &common.ClientOptions{}
+			opts := &common.HttpClientOptions{}
 			if tc.basicAuth {
 				opts.Username = "foo"
 				opts.Password = "bar"
@@ -136,26 +116,23 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 			}
 
 			for _, s := range redis_charts_spec {
-				tarGzBytes, err := ioutil.ReadFile(s.tgzFile)
+				tarGzBytes, err := os.ReadFile(s.tgzFile)
 				if err != nil {
 					t.Fatalf("%+v", err)
 				}
 				// stand up an http server just for the duration of this test
 				var handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(200)
-					w.Write(tarGzBytes)
+					_, err = w.Write(tarGzBytes)
+					if err != nil {
+						t.Fatalf("%+v", err)
+					}
 				})
 				if tc.basicAuth {
 					handler = basicAuth(handler, "foo", "bar", "myrealm")
 				}
 				var ts *httptest.Server
 				if tc.tls {
-					// I cheated a bit in this test. Instead of generating my own certificates
-					// and keys using openssl tool, which I found time consuming and overly complicated,
-					// I just copied the ones being used by helm.sh tool for testing purposes
-					// from https://github.com/helm/helm/tree/main/testdata
-					// in order to save some time. Should n't affect any functionality of productionn
-					// code
 					ts = httptest.NewUnstartedServer(handler)
 					tlsConf, err := httpclient.NewClientTLS(pub, priv, ca)
 					if err != nil {
@@ -185,36 +162,40 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 			secretObjs := []runtime.Object{}
 			if tc.basicAuth && tc.tls {
 				secretRef = "both-credentials"
-				if secret, err := newBasicAuthTlsSecret(secretRef, repoNamespace, "foo", "bar", pub, priv, ca); err != nil {
-					t.Fatalf("%+v", err)
-				} else {
-					secretObjs = append(secretObjs, secret)
-				}
+				secret := newBasicAuthTlsSecret(types.NamespacedName{
+					Name:      secretRef,
+					Namespace: repoNamespace}, "foo", "bar", pub, priv, ca)
+				secretObjs = append(secretObjs, secret)
 			} else if tc.basicAuth {
 				secretRef = "http-credentials"
-				secretObjs = append(secretObjs, newBasicAuthSecret(secretRef, repoNamespace, "foo", "bar"))
+				secretObjs = append(secretObjs, newBasicAuthSecret(
+					types.NamespacedName{
+						Name:      secretRef,
+						Namespace: repoNamespace}, "foo", "bar"))
 			} else if tc.tls {
 				secretRef = "https-credentials"
-				if secret, err := newTlsSecret(secretRef, repoNamespace, pub, priv, ca); err != nil {
-					t.Fatalf("%+v", err)
-				} else {
-					secretObjs = append(secretObjs, secret)
-				}
+				secret := newTlsSecret(types.NamespacedName{
+					Name:      secretRef,
+					Namespace: repoNamespace}, pub, priv, ca)
+				secretObjs = append(secretObjs, secret)
 			}
 
-			ts2, repo, err := newRepoWithIndex(
-				"testdata/redis-two-versions.yaml", repoName, repoNamespace, replaceUrls, secretRef)
+			ts2, repo, err := newHttpRepoAndServeIndex(
+				testYaml("redis-two-versions.yaml"), repoName, repoNamespace, replaceUrls, secretRef)
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
 			defer ts2.Close()
 
-			s, mock, _, _, err := newServerWithRepos(t, []runtime.Object{repo}, charts, secretObjs)
+			s, mock, err := newServerWithRepos(t, []sourcev1beta2.HelmRepository{*repo}, charts, secretObjs)
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
 
-			s.redisMockExpectGetFromRepoCache(mock, nil, repo)
+			err = s.redisMockExpectGetFromRepoCache(mock, nil, *repo)
+			if err != nil {
+				t.Fatalf("%+v", err)
+			}
 			chartVersion := tc.request.PkgVersion
 			if chartVersion == "" {
 				chartVersion = charts[0].chartRevision
@@ -231,25 +212,25 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 			if !tc.chartCacheHit {
 				// first a miss (there will be actually two calls to Redis GET based on current code path)
 				for i := 0; i < 2; i++ {
-					if err = redisMockExpectGetFromChartCache(mock, chartCacheKey, "", nil); err != nil {
+					if err = redisMockExpectGetFromHttpChartCache(mock, chartCacheKey, "", nil); err != nil {
 						t.Fatalf("%+v", err)
 					}
 				}
 				// followed by a set and a hit
-				if err = s.redisMockSetValueForChart(mock, chartCacheKey, requestChartUrl, opts); err != nil {
+				if err = redisMockSetValueForHttpChart(mock, chartCacheKey, requestChartUrl, opts); err != nil {
 					t.Fatalf("%+v", err)
 				}
 			}
-			if err = redisMockExpectGetFromChartCache(mock, chartCacheKey, requestChartUrl, opts); err != nil {
+			if err = redisMockExpectGetFromHttpChartCache(mock, chartCacheKey, requestChartUrl, opts); err != nil {
 				t.Fatalf("%+v", err)
 			}
 
-			response, err := s.GetAvailablePackageDetail(context.Background(), tc.request)
+			response, err := s.GetAvailablePackageDetail(context.Background(), connect.NewRequest(tc.request))
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
 
-			compareActualVsExpectedAvailablePackageDetail(t, response.AvailablePackageDetail, tc.expectedPackageDetail)
+			compareAvailablePackageDetail(t, response.Msg.AvailablePackageDetail, tc.expectedPackageDetail)
 
 			if err = mock.ExpectationsWereMet(); err != nil {
 				t.Fatalf("%v", err)
@@ -266,7 +247,7 @@ func TestTransientHttpFailuresAreRetriedForChartCache(t *testing.T) {
 		charts := []testSpecChartWithUrl{}
 
 		for _, s := range redis_charts_spec {
-			tarGzBytes, err := ioutil.ReadFile(s.tgzFile)
+			tarGzBytes, err := os.ReadFile(s.tgzFile)
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
@@ -278,10 +259,16 @@ func TestTransientHttpFailuresAreRetriedForChartCache(t *testing.T) {
 				if !nofail && failuresAllowed > 0 {
 					failuresAllowed--
 					w.WriteHeader(503)
-					w.Write([]byte(fmt.Sprintf("The server is not ready to handle the request: [%d try left before OK]", failuresAllowed)))
+					_, err = w.Write([]byte(fmt.Sprintf("The server is not ready to handle the request: [%d try left before OK]", failuresAllowed)))
+					if err != nil {
+						t.Fatalf("%+v", err)
+					}
 				} else {
 					w.WriteHeader(200)
-					w.Write(tarGzBytes)
+					_, err := w.Write(tarGzBytes)
+					if err != nil {
+						t.Fatalf("%+v", err)
+					}
 				}
 			})
 			ts := httptest.NewServer(handler)
@@ -297,14 +284,14 @@ func TestTransientHttpFailuresAreRetriedForChartCache(t *testing.T) {
 			charts = append(charts, c)
 		}
 
-		ts2, repo, err := newRepoWithIndex(
-			"testdata/redis-two-versions.yaml", repoName, repoNamespace, replaceUrls, "")
+		ts2, repo, err := newHttpRepoAndServeIndex(
+			testYaml("redis-two-versions.yaml"), repoName, repoNamespace, replaceUrls, "")
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
 		defer ts2.Close()
 
-		s, mock, _, _, err := newServerWithRepos(t, []runtime.Object{repo}, charts, nil)
+		s, mock, err := newServerWithRepos(t, []sourcev1beta2.HelmRepository{*repo}, charts, nil)
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
@@ -313,7 +300,10 @@ func TestTransientHttpFailuresAreRetriedForChartCache(t *testing.T) {
 		chartVersion := charts[0].chartRevision
 		requestChartUrl := charts[0].chartUrl
 
-		s.redisMockExpectGetFromRepoCache(mock, nil, repo)
+		err = s.redisMockExpectGetFromRepoCache(mock, nil, *repo)
+		if err != nil {
+			t.Fatalf("%+v", err)
+		}
 		chartCacheKey, err := s.chartCache.KeyFor(
 			repoNamespace,
 			packageIdentifier,
@@ -322,21 +312,21 @@ func TestTransientHttpFailuresAreRetriedForChartCache(t *testing.T) {
 			t.Fatalf("%+v", err)
 		}
 
-		if err = redisMockExpectGetFromChartCache(mock, chartCacheKey, requestChartUrl, nil); err != nil {
+		if err = redisMockExpectGetFromHttpChartCache(mock, chartCacheKey, requestChartUrl, nil); err != nil {
 			t.Fatalf("%+v", err)
 		}
 
 		response, err := s.GetAvailablePackageDetail(
 			context.Background(),
-			&corev1.GetAvailablePackageDetailRequest{
+			connect.NewRequest(&corev1.GetAvailablePackageDetailRequest{
 				AvailablePackageRef: availableRef(packageIdentifier, repoNamespace),
-			})
+			}))
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
 
-		compareActualVsExpectedAvailablePackageDetail(t,
-			response.AvailablePackageDetail, expected_detail_redis_1)
+		compareAvailablePackageDetail(t,
+			response.Msg.AvailablePackageDetail, expected_detail_redis_1)
 
 		if err = mock.ExpectationsWereMet(); err != nil {
 			t.Fatalf("%v", err)
@@ -346,9 +336,9 @@ func TestTransientHttpFailuresAreRetriedForChartCache(t *testing.T) {
 
 func TestNegativeGetAvailablePackageDetail(t *testing.T) {
 	negativeTestCases := []struct {
-		testName   string
-		request    *corev1.GetAvailablePackageDetailRequest
-		statusCode codes.Code
+		testName  string
+		request   *corev1.GetAvailablePackageDetailRequest
+		errorCode connect.Code
 	}{
 		{
 			testName: "it fails if request is missing namespace",
@@ -356,30 +346,30 @@ func TestNegativeGetAvailablePackageDetail(t *testing.T) {
 				AvailablePackageRef: &corev1.AvailablePackageReference{
 					Identifier: "redis",
 				}},
-			statusCode: codes.InvalidArgument,
+			errorCode: connect.CodeInvalidArgument,
 		},
 		{
 			testName: "it fails if request has invalid identifier",
 			request: &corev1.GetAvailablePackageDetailRequest{
 				AvailablePackageRef: availableRef("redis", "default"),
 			},
-			statusCode: codes.InvalidArgument,
+			errorCode: connect.CodeInvalidArgument,
 		},
 	}
 
 	// I don't need any repos/charts to test these scenarios
 	for _, tc := range negativeTestCases {
 		t.Run(tc.testName, func(t *testing.T) {
-			s, mock, _, _, err := newServerWithRepos(t, nil, nil, nil)
+			s, mock, err := newSimpleServerWithRepos(t, nil)
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
 
-			response, err := s.GetAvailablePackageDetail(context.Background(), tc.request)
+			response, err := s.GetAvailablePackageDetail(context.Background(), connect.NewRequest(tc.request))
 			if err == nil {
 				t.Fatalf("got nil, want error")
 			}
-			if got, want := status.Code(err), tc.statusCode; got != want {
+			if got, want := connect.CodeOf(err), tc.errorCode; err != nil && got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
 
@@ -402,7 +392,7 @@ func TestNonExistingRepoOrInvalidPkgVersionGetAvailablePackageDetail(t *testing.
 		request       *corev1.GetAvailablePackageDetailRequest
 		repoName      string
 		repoNamespace string
-		statusCode    codes.Code
+		errorCode     connect.Code
 	}{
 		{
 			testName:      "it fails if request has invalid package version",
@@ -412,7 +402,7 @@ func TestNonExistingRepoOrInvalidPkgVersionGetAvailablePackageDetail(t *testing.
 				AvailablePackageRef: availableRef("bitnami-1/redis", "default"),
 				PkgVersion:          "99.99.0",
 			},
-			statusCode: codes.Internal,
+			errorCode: connect.CodeInternal,
 		},
 		{
 			testName:      "it fails if repo does not exist",
@@ -421,7 +411,7 @@ func TestNonExistingRepoOrInvalidPkgVersionGetAvailablePackageDetail(t *testing.
 			request: &corev1.GetAvailablePackageDetailRequest{
 				AvailablePackageRef: availableRef("bitnami-2/redis", "default"),
 			},
-			statusCode: codes.NotFound,
+			errorCode: connect.CodeNotFound,
 		},
 		{
 			testName:      "it fails if repo does not exist in specified namespace",
@@ -430,7 +420,7 @@ func TestNonExistingRepoOrInvalidPkgVersionGetAvailablePackageDetail(t *testing.
 			request: &corev1.GetAvailablePackageDetailRequest{
 				AvailablePackageRef: availableRef("bitnami-1/redis", "default"),
 			},
-			statusCode: codes.NotFound,
+			errorCode: connect.CodeNotFound,
 		},
 		{
 			testName:      "it fails if request has invalid chart",
@@ -439,7 +429,7 @@ func TestNonExistingRepoOrInvalidPkgVersionGetAvailablePackageDetail(t *testing.
 			request: &corev1.GetAvailablePackageDetailRequest{
 				AvailablePackageRef: availableRef("bitnami-1/redis-123", "default"),
 			},
-			statusCode: codes.NotFound,
+			errorCode: connect.CodeNotFound,
 		},
 	}
 
@@ -448,14 +438,17 @@ func TestNonExistingRepoOrInvalidPkgVersionGetAvailablePackageDetail(t *testing.
 			replaceUrls := make(map[string]string)
 			charts := []testSpecChartWithUrl{}
 			for _, s := range redis_charts_spec {
-				tarGzBytes, err := ioutil.ReadFile(s.tgzFile)
+				tarGzBytes, err := os.ReadFile(s.tgzFile)
 				if err != nil {
 					t.Fatalf("%+v", err)
 				}
 				// stand up an http server just for the duration of this test
 				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(200)
-					w.Write(tarGzBytes)
+					_, err = w.Write(tarGzBytes)
+					if err != nil {
+						t.Fatalf("%+v", err)
+					}
 				}))
 				defer ts.Close()
 				replaceUrls[fmt.Sprintf("{{%s}}", s.tgzFile)] = ts.URL
@@ -468,14 +461,14 @@ func TestNonExistingRepoOrInvalidPkgVersionGetAvailablePackageDetail(t *testing.
 				charts = append(charts, c)
 			}
 
-			ts2, repo, err := newRepoWithIndex(
-				"testdata/redis-two-versions.yaml", tc.repoName, tc.repoNamespace, replaceUrls, "")
+			ts2, repo, err := newHttpRepoAndServeIndex(
+				testYaml("redis-two-versions.yaml"), tc.repoName, tc.repoNamespace, replaceUrls, "")
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
 			defer ts2.Close()
 
-			s, mock, _, _, err := newServerWithRepos(t, []runtime.Object{repo}, charts, nil)
+			s, mock, err := newServerWithRepos(t, []sourcev1beta2.HelmRepository{*repo}, charts, nil)
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
@@ -485,7 +478,10 @@ func TestNonExistingRepoOrInvalidPkgVersionGetAvailablePackageDetail(t *testing.
 
 			repoExists := requestRepoName == tc.repoName && requestRepoNamespace == tc.repoNamespace
 			if repoExists {
-				s.redisMockExpectGetFromRepoCache(mock, nil, repo)
+				err = s.redisMockExpectGetFromRepoCache(mock, nil, *repo)
+				if err != nil {
+					t.Fatalf("%+v", err)
+				}
 				requestChartName := strings.Split(tc.request.AvailablePackageRef.Identifier, "/")[1]
 				chartExists := requestChartName == "redis"
 				if chartExists {
@@ -498,18 +494,18 @@ func TestNonExistingRepoOrInvalidPkgVersionGetAvailablePackageDetail(t *testing.
 					}
 					// on a cache miss (there will be actually two calls to Redis GET based on current code path)
 					for i := 0; i < 2; i++ {
-						if err = redisMockExpectGetFromChartCache(mock, chartCacheKey, "", nil); err != nil {
+						if err = redisMockExpectGetFromHttpChartCache(mock, chartCacheKey, "", nil); err != nil {
 							t.Fatalf("%+v", err)
 						}
 					}
 				}
 			}
 
-			response, err := s.GetAvailablePackageDetail(context.Background(), tc.request)
+			response, err := s.GetAvailablePackageDetail(context.Background(), connect.NewRequest(tc.request))
 			if err == nil {
 				t.Fatalf("got nil, want error")
 			}
-			if got, want := status.Code(err), tc.statusCode; got != want {
+			if got, want := connect.CodeOf(err), tc.errorCode; got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
 
@@ -526,15 +522,15 @@ func TestNonExistingRepoOrInvalidPkgVersionGetAvailablePackageDetail(t *testing.
 
 func TestNegativeGetAvailablePackageVersions(t *testing.T) {
 	testCases := []struct {
-		name               string
-		request            *corev1.GetAvailablePackageVersionsRequest
-		expectedStatusCode codes.Code
-		expectedResponse   *corev1.GetAvailablePackageVersionsResponse
+		name              string
+		request           *corev1.GetAvailablePackageVersionsRequest
+		expectedErrorCode connect.Code
+		expectedResponse  *corev1.GetAvailablePackageVersionsResponse
 	}{
 		{
-			name:               "it returns invalid argument if called without a package reference",
-			request:            nil,
-			expectedStatusCode: codes.InvalidArgument,
+			name:              "it returns invalid argument if called without a package reference",
+			request:           nil,
+			expectedErrorCode: connect.CodeInvalidArgument,
 		},
 		{
 			name: "it returns invalid argument if called without namespace",
@@ -544,7 +540,7 @@ func TestNegativeGetAvailablePackageVersions(t *testing.T) {
 					Identifier: "bitnami/apache",
 				},
 			},
-			expectedStatusCode: codes.InvalidArgument,
+			expectedErrorCode: connect.CodeInvalidArgument,
 		},
 		{
 			name: "it returns invalid argument if called without an identifier",
@@ -555,32 +551,29 @@ func TestNegativeGetAvailablePackageVersions(t *testing.T) {
 					},
 				},
 			},
-			expectedStatusCode: codes.InvalidArgument,
+			expectedErrorCode: connect.CodeInvalidArgument,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, mock, _, _, err := newServerWithRepos(t, nil, nil, nil)
+			s, mock, err := newSimpleServerWithRepos(t, nil)
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
 
-			response, err := s.GetAvailablePackageVersions(context.Background(), tc.request)
+			response, err := s.GetAvailablePackageVersions(context.Background(), connect.NewRequest(tc.request))
 
-			if got, want := status.Code(err), tc.expectedStatusCode; got != want {
+			if got, want := connect.CodeOf(err), tc.expectedErrorCode; err != nil && got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
 
 			// We don't need to check anything else for non-OK codes.
-			if tc.expectedStatusCode != codes.OK {
+			if tc.expectedErrorCode != 0 {
 				return
 			}
+			compareAvailablePackageVersions(t, response.Msg, tc.expectedResponse)
 
-			opts := cmpopts.IgnoreUnexported(corev1.GetAvailablePackageVersionsResponse{}, corev1.PackageAppVersion{})
-			if got, want := response, tc.expectedResponse; !cmp.Equal(want, got, opts) {
-				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
-			}
 			// we make sure that all expectations were met
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("there were unfulfilled expectations: %s", err)
@@ -591,34 +584,33 @@ func TestNegativeGetAvailablePackageVersions(t *testing.T) {
 
 func TestGetAvailablePackageVersions(t *testing.T) {
 	testCases := []struct {
-		name               string
-		repoIndex          string
-		repoNamespace      string
-		repoName           string
-		request            *corev1.GetAvailablePackageVersionsRequest
-		expectedStatusCode codes.Code
-		expectedResponse   *corev1.GetAvailablePackageVersionsResponse
+		name              string
+		repoIndex         string
+		repoNamespace     string
+		repoName          string
+		request           *corev1.GetAvailablePackageVersionsRequest
+		expectedErrorCode connect.Code
+		expectedResponse  *corev1.GetAvailablePackageVersionsResponse
 	}{
 		{
 			name:          "it returns the package version summary for redis chart in bitnami repo",
-			repoIndex:     "testdata/redis-many-versions.yaml",
+			repoIndex:     testYaml("redis-many-versions.yaml"),
 			repoNamespace: "kubeapps",
 			repoName:      "bitnami",
 			request: &corev1.GetAvailablePackageVersionsRequest{
 				AvailablePackageRef: availableRef("bitnami/redis", "kubeapps"),
 			},
-			expectedStatusCode: codes.OK,
-			expectedResponse:   expected_versions_redis,
+			expectedResponse: expected_versions_redis,
 		},
 		{
 			name:          "it returns error for non-existent chart",
-			repoIndex:     "testdata/redis-many-versions.yaml",
+			repoIndex:     testYaml("redis-many-versions.yaml"),
 			repoNamespace: "kubeapps",
 			repoName:      "bitnami",
 			request: &corev1.GetAvailablePackageVersionsRequest{
 				AvailablePackageRef: availableRef("bitnami/redis-123", "kubeapps"),
 			},
-			expectedStatusCode: codes.Internal,
+			expectedErrorCode: connect.CodeInternal,
 		},
 	}
 
@@ -629,14 +621,17 @@ func TestGetAvailablePackageVersions(t *testing.T) {
 			replaceUrls := make(map[string]string)
 			charts := []testSpecChartWithUrl{}
 			for _, s := range redis_charts_spec {
-				tarGzBytes, err := ioutil.ReadFile(s.tgzFile)
+				tarGzBytes, err := os.ReadFile(s.tgzFile)
 				if err != nil {
 					t.Fatalf("%+v", err)
 				}
 				// stand up an http server just for the duration of this test
 				ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(200)
-					w.Write(tarGzBytes)
+					_, err = w.Write(tarGzBytes)
+					if err != nil {
+						t.Fatalf("%+v", err)
+					}
 				}))
 				defer ts.Close()
 				replaceUrls[fmt.Sprintf("{{%s}}", s.tgzFile)] = ts.URL
@@ -648,32 +643,29 @@ func TestGetAvailablePackageVersions(t *testing.T) {
 				}
 				charts = append(charts, c)
 			}
-			ts, repo, err := newRepoWithIndex(tc.repoIndex, tc.repoName, tc.repoNamespace, replaceUrls, "")
+			ts, repo, err := newHttpRepoAndServeIndex(tc.repoIndex, tc.repoName, tc.repoNamespace, replaceUrls, "")
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
 			defer ts.Close()
 
-			s, mock, _, _, err := newServerWithRepos(t, []runtime.Object{repo}, charts, nil)
+			s, mock, err := newServerWithRepos(t, []sourcev1beta2.HelmRepository{*repo}, charts, nil)
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
 
 			// we make sure that all expectations were met
 			if err := mock.ExpectationsWereMet(); err != nil {
-				t.Errorf("there were unfulfilled expectations: %s", err)
+				t.Fatal(err)
 			}
 
-			key, bytes, err := s.redisKeyValueForRepo(repo)
-			if err != nil {
-				t.Fatalf("%+v", err)
+			if err = s.redisMockExpectGetFromRepoCache(mock, nil, *repo); err != nil {
+				t.Fatal(err)
 			}
 
-			mock.ExpectGet(key).SetVal(string(bytes))
+			response, err := s.GetAvailablePackageVersions(context.Background(), connect.NewRequest(tc.request))
 
-			response, err := s.GetAvailablePackageVersions(context.Background(), tc.request)
-
-			if got, want := status.Code(err), tc.expectedStatusCode; got != want {
+			if got, want := connect.CodeOf(err), tc.expectedErrorCode; err != nil && got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
 
@@ -683,16 +675,97 @@ func TestGetAvailablePackageVersions(t *testing.T) {
 			}
 
 			// We don't need to check anything else for non-OK codes.
-			if tc.expectedStatusCode != codes.OK {
+			if tc.expectedErrorCode != 0 {
 				return
 			}
+			compareAvailablePackageVersions(t, response.Msg, tc.expectedResponse)
+		})
+	}
+}
 
-			opts := cmpopts.IgnoreUnexported(
-				corev1.GetAvailablePackageVersionsResponse{},
-				corev1.PackageAppVersion{})
-			if got, want := response, tc.expectedResponse; !cmp.Equal(want, got, opts) {
-				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+func TestGetOciAvailablePackageVersions(t *testing.T) {
+	seed_data_2, err := newFakeRemoteOciRegistryData_2()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testCases := []struct {
+		name              string
+		repoNamespace     string
+		repoName          string
+		repoUrl           string
+		request           *corev1.GetAvailablePackageVersionsRequest
+		expectedErrorCode connect.Code
+		expectedResponse  *corev1.GetAvailablePackageVersionsResponse
+		seedData          *fakeRemoteOciRegistryData
+		charts            []testSpecChartWithUrl
+	}{
+		{
+			name:          "it returns the package version summary for podinfo chart in oci repo",
+			repoNamespace: "namespace-1",
+			repoName:      "repo-1",
+			request: &corev1.GetAvailablePackageVersionsRequest{
+				AvailablePackageRef: availableRef("repo-1/podinfo", "namespace-1"),
+			},
+			expectedResponse: expected_versions_podinfo_2,
+			seedData:         seed_data_2,
+			charts:           oci_podinfo_charts_spec_2,
+			repoUrl:          "oci://localhost:54321/userX/charts",
+		},
+		{
+			name:          "it returns error for non-existent chart",
+			repoNamespace: "namespace-1",
+			repoName:      "repo-1",
+			repoUrl:       "oci://localhost:54321/userX/charts",
+			request: &corev1.GetAvailablePackageVersionsRequest{
+				AvailablePackageRef: availableRef("repo-1/zippity", "namespace-1"),
+			},
+			expectedErrorCode: connect.CodeInternal,
+			seedData:          seed_data_2,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			initOciFakeClientBuilder(t, *tc.seedData)
+			repoName := strings.Split(tc.request.AvailablePackageRef.Identifier, "/")[0]
+			repoNamespace := tc.request.AvailablePackageRef.Context.Namespace
+
+			repo, err := newOciRepo(repoName, repoNamespace, tc.repoUrl)
+			if err != nil {
+				t.Fatal(err)
 			}
+
+			s, mock, err := newServerWithRepos(t, []sourcev1beta2.HelmRepository{*repo}, tc.charts, nil)
+			if err != nil {
+				t.Fatalf("%+v", err)
+			}
+
+			// we make sure that all expectations were met
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+
+			if err = s.redisMockExpectGetFromRepoCache(mock, nil, *repo); err != nil {
+				t.Fatal(err)
+			}
+
+			response, err := s.GetAvailablePackageVersions(context.Background(), connect.NewRequest(tc.request))
+
+			if got, want := connect.CodeOf(err), tc.expectedErrorCode; err != nil && got != want {
+				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
+			}
+
+			// we make sure that all expectations were met
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+
+			// We don't need to check anything else for non-OK codes.
+			if tc.expectedErrorCode != 0 {
+				return
+			}
+			compareAvailablePackageVersions(t, response.Msg, tc.expectedResponse)
 		})
 	}
 }
@@ -701,35 +774,39 @@ func TestGetAvailablePackageVersions(t *testing.T) {
 // this test is focused on the chart cache work queue
 func TestChartCacheResyncNotIdle(t *testing.T) {
 	t.Run("test that causes RetryWatcher to stop and the chart cache needs to resync", func(t *testing.T) {
+
 		// start with an empty server that only has an empty repo cache
 		// passing in []testSpecChartWithUrl{} instead of nil will add support for chart cache
-		s, mock, dyncli, watcher, err := newServerWithRepos(t, nil, []testSpecChartWithUrl{}, nil)
+		s, mock, err := newServerWithRepos(t, nil, []testSpecChartWithUrl{}, nil)
 		if err != nil {
 			t.Fatalf("error instantiating the server: %v", err)
 		}
 
 		// what I need is a single repo with a whole bunch of unique charts (packages)
-		tarGzBytes, err := ioutil.ReadFile("./testdata/redis-14.4.0.tgz")
+		tarGzBytes, err := os.ReadFile(testTgz("redis-14.4.0.tgz"))
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
 		// stand up an http server just for the duration of this test
 		var handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(200)
-			w.Write(tarGzBytes)
+			_, err = w.Write(tarGzBytes)
+			if err != nil {
+				t.Fatalf("%+v", err)
+			}
 		})
 		ts := httptest.NewServer(handler)
 		defer ts.Close()
 
 		const NUM_CHARTS = 20
 		// create a YAML index file that contains this many unique packages
-		tmpFile, err := ioutil.TempFile(os.TempDir(), "*.yaml")
+		tmpFile, err := os.CreateTemp(os.TempDir(), "*.yaml")
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
 		defer os.Remove(tmpFile.Name())
 
-		templateYAMLBytes, err := ioutil.ReadFile("testdata/single-package-template.yaml")
+		templateYAMLBytes, err := os.ReadFile(testYaml("single-package-template.yaml"))
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
@@ -748,28 +825,25 @@ func TestChartCacheResyncNotIdle(t *testing.T) {
 		repoName := "multitude-of-charts"
 		repoNamespace := "default"
 		replaceUrls := make(map[string]string)
-		replaceUrls["{{testdata/redis-14.4.0.tgz}}"] = ts.URL
-		ts2, r, err := newRepoWithIndex(
+		replaceUrls["{{./testdata/charts/redis-14.4.0.tgz}}"] = ts.URL
+		ts2, r, err := newHttpRepoAndServeIndex(
 			tmpFile.Name(), repoName, repoNamespace, replaceUrls, "")
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
 		defer ts2.Close()
 
-		if _, err = dyncli.Resource(repositoriesGvr).Namespace(repoNamespace).
-			Create(context.Background(), r, metav1.CreateOptions{}); err != nil {
-			t.Fatalf("%v", err)
-		}
-
-		repoKey, repoBytes, err := s.redisKeyValueForRepo(r)
+		repoKey, repoBytes, err := s.redisKeyValueForRepo(*r)
 		if err != nil {
 			t.Fatalf("%+v", err)
+		} else {
+			redisMockSetValueForRepo(mock, repoKey, repoBytes, nil)
 		}
-		mock.ExpectGet(repoKey).RedisNil()
-		redisMockSetValueForRepo(mock, repoKey, repoBytes)
 
-		opts := &common.ClientOptions{}
+		match := fmt.Sprintf("helmcharts:%s:%s/*:*", repoNamespace, repoName)
+		mock.ExpectScan(0, match, 0).SetVal([]string{}, 0)
 
+		opts := &common.HttpClientOptions{}
 		chartCacheKeys := []string{}
 		var chartBytes []byte
 		for i := 0; i < NUM_CHARTS; i++ {
@@ -780,7 +854,8 @@ func TestChartCacheResyncNotIdle(t *testing.T) {
 				t.Fatalf("%+v", err)
 			}
 			if i == 0 {
-				chartBytes, err = cache.ChartCacheComputeValue(chartID, ts.URL, chartVersion, opts)
+				fn := downloadHttpChartFn(opts)
+				chartBytes, err = cache.ChartCacheComputeValue(chartID, ts.URL, chartVersion, fn)
 				if err != nil {
 					t.Fatalf("%+v", err)
 				}
@@ -789,9 +864,15 @@ func TestChartCacheResyncNotIdle(t *testing.T) {
 			s.chartCache.ExpectAdd(chartCacheKey)
 			chartCacheKeys = append(chartCacheKeys, chartCacheKey)
 		}
+
 		s.repoCache.ExpectAdd(repoKey)
 
-		watcher.Add(r)
+		ctrlClient, watcher, err := ctrlClientAndWatcher(t, s)
+		if err != nil {
+			t.Fatal(err)
+		} else if err = ctrlClient.Create(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
 
 		done := make(chan int, 1)
 
@@ -823,7 +904,8 @@ func TestChartCacheResyncNotIdle(t *testing.T) {
 				t.Errorf("ERROR: Expected empty repo work queue!")
 			} else {
 				mock.ExpectFlushDB().SetVal("OK")
-				redisMockSetValueForRepo(mock, repoKey, repoBytes)
+				redisMockSetValueForRepo(mock, repoKey, repoBytes, nil)
+				mock.ExpectScan(0, match, 0).SetVal([]string{}, 0)
 				// now we can signal to the server it's ok to proceed
 				repoResyncCh <- 0
 
@@ -860,67 +942,237 @@ func TestChartCacheResyncNotIdle(t *testing.T) {
 			t.FailNow()
 		}
 
+		// sanity check
 		if err = mock.ExpectationsWereMet(); err != nil {
 			t.Fatalf("%v", err)
 		}
 	})
 }
 
-func newChart(name, namespace string, spec, status map[string]interface{}) *unstructured.Unstructured {
-	metadata := map[string]interface{}{
-		"name":            name,
-		"generation":      int64(1),
-		"resourceVersion": "1",
-	}
-	if namespace != "" {
-		metadata["namespace"] = namespace
+// ref https://github.com/vmware-tanzu/kubeapps/issues/4381
+// [fluxv2] non-FQDN chart url fails on chart view #4381
+func TestChartWithRelativeURL(t *testing.T) {
+	repoName := "testRepo"
+	repoNamespace := "default"
+
+	tarGzBytes, err := os.ReadFile(testTgz("airflow-1.0.0.tgz"))
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	obj := map[string]interface{}{
-		"apiVersion": fmt.Sprintf("%s/%s", fluxGroup, fluxVersion),
-		"kind":       fluxHelmChart,
-		"metadata":   metadata,
+	indexYAMLBytes, err := os.ReadFile(testYaml("chart-with-relative-url.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RequestURI == "/index.yaml" {
+			fmt.Fprintln(w, string(indexYAMLBytes))
+		} else if r.RequestURI == "/charts/airflow-1.0.0.tgz" {
+			w.WriteHeader(200)
+			_, err = w.Write(tarGzBytes)
+			if err != nil {
+				t.Fatalf("%+v", err)
+			}
+		} else {
+			w.WriteHeader(404)
+		}
+	}))
+
+	repoSpec := &sourcev1beta2.HelmRepositorySpec{
+		URL:      ts.URL,
+		Interval: metav1.Duration{Duration: 1 * time.Minute},
+	}
+
+	repoStatus := &sourcev1beta2.HelmRepositoryStatus{
+		Artifact: &sourcev1.Artifact{
+			Digest:         "651f952130ea96823711d08345b85e82be011dc6",
+			LastUpdateTime: metav1.Time{Time: lastUpdateTime},
+			Revision:       "651f952130ea96823711d08345b85e82be011dc6",
+		},
+		Conditions: []metav1.Condition{
+			{
+				Type:   fluxmeta.ReadyCondition,
+				Status: metav1.ConditionTrue,
+				Reason: fluxmeta.SucceededReason,
+			},
+		},
+		URL: ts.URL + "/index.yaml",
+	}
+	repo := newRepo(repoName, repoNamespace, repoSpec, repoStatus)
+	defer ts.Close()
+
+	s, mock, err := newServerWithRepos(t,
+		[]sourcev1beta2.HelmRepository{repo},
+		[]testSpecChartWithUrl{
+			{
+				chartID:       fmt.Sprintf("%s/airflow", repoName),
+				chartRevision: "1.0.0",
+				chartUrl:      ts.URL + "/charts/airflow-1.0.0.tgz",
+				repoNamespace: repoNamespace,
+			},
+		}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err = s.redisMockExpectGetFromRepoCache(mock, nil, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := s.GetAvailablePackageVersions(
+		context.Background(), connect.NewRequest(&corev1.GetAvailablePackageVersionsRequest{
+			AvailablePackageRef: availableRef(repoName+"/airflow", repoNamespace),
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compareAvailablePackageVersions(t, response.Msg, expected_versions_airflow)
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetOciAvailablePackageDetail(t *testing.T) {
+	seed_data_1, err := newFakeRemoteOciRegistryData_1()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testCases := []struct {
+		testName              string
+		request               *corev1.GetAvailablePackageDetailRequest
+		chartCacheHit         bool
+		expectedPackageDetail *corev1.AvailablePackageDetail
+		seedData              *fakeRemoteOciRegistryData
+		charts                []testSpecChartWithUrl
+		repoUrl               string
+	}{
+		{
+			testName: "it returns details about the latest podinfo package in oci repo",
+			request: &corev1.GetAvailablePackageDetailRequest{
+				AvailablePackageRef: availableRef("repo-1/podinfo", "namespace-1"),
+			},
+			chartCacheHit:         true,
+			expectedPackageDetail: expected_detail_podinfo_1,
+			seedData:              seed_data_1,
+			charts:                oci_podinfo_charts_spec,
+			repoUrl:               "oci://localhost:54321/userX/charts",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.testName, func(t *testing.T) {
+			initOciFakeClientBuilder(t, *tc.seedData)
+			repoName := strings.Split(tc.request.AvailablePackageRef.Identifier, "/")[0]
+			repoNamespace := tc.request.AvailablePackageRef.Context.Namespace
+
+			repo, err := newOciRepo(repoName, repoNamespace, tc.repoUrl)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			s, mock, err := newServerWithRepos(t, []sourcev1beta2.HelmRepository{*repo}, tc.charts, nil)
+			if err != nil {
+				t.Fatalf("%+v", err)
+			}
+
+			err = s.redisMockExpectGetFromRepoCache(mock, nil, *repo)
+			if err != nil {
+				t.Fatalf("%+v", err)
+			}
+			chartVersion := tc.request.PkgVersion
+			if chartVersion == "" {
+				chartVersion = tc.charts[0].chartRevision
+			}
+			chartCacheKey, err := s.chartCache.KeyFor(
+				repoNamespace,
+				tc.request.AvailablePackageRef.Identifier,
+				chartVersion)
+			if err != nil {
+				t.Fatalf("%+v", err)
+			}
+
+			ociChartRepo, err := s.newOCIChartRepositoryAndLogin(context.Background(), *repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.chartCacheHit {
+				// first a miss (there will be actually two calls to Redis GET based on current code path)
+				for i := 0; i < 2; i++ {
+					if err = redisMockExpectGetFromOciChartCache(mock, chartCacheKey, "", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// followed by a set and a hit
+				err = redisMockSetValueForOciChart(mock, chartCacheKey, tc.charts[0].chartUrl, ociChartRepo)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err = redisMockExpectGetFromOciChartCache(mock, chartCacheKey, tc.charts[0].chartUrl, ociChartRepo); err != nil {
+				t.Fatal(err)
+			}
+
+			response, err := s.GetAvailablePackageDetail(context.Background(), connect.NewRequest(tc.request))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			compareAvailablePackageDetail(t, response.Msg.AvailablePackageDetail, tc.expectedPackageDetail)
+
+			if err = mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func newChart(name, namespace string, spec *sourcev1beta2.HelmChartSpec, status *sourcev1beta2.HelmChartStatus) sourcev1beta2.HelmChart {
+	helmChart := sourcev1beta2.HelmChart{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       name,
+			Generation: int64(1),
+		},
+	}
+	if namespace != "" {
+		helmChart.ObjectMeta.Namespace = namespace
 	}
 
 	if spec != nil {
-		obj["spec"] = spec
+		helmChart.Spec = *spec.DeepCopy()
 	}
 
 	if status != nil {
-		status["observedGeneration"] = int64(1)
-		obj["status"] = status
+		helmChart.Status = *status.DeepCopy()
+		helmChart.Status.ObservedGeneration = int64(1)
 	}
 
-	return &unstructured.Unstructured{
-		Object: obj,
-	}
+	return helmChart
 }
 
-func availableRef(id, namespace string) *corev1.AvailablePackageReference {
-	return &corev1.AvailablePackageReference{
-		Identifier: id,
-		Context: &corev1.Context{
-			Namespace: namespace,
-			Cluster:   KubeappsCluster,
-		},
-		Plugin: fluxPlugin,
-	}
-}
-
-func (s *Server) redisMockSetValueForChart(mock redismock.ClientMock, key, url string, opts *common.ClientOptions) error {
-	cs := repoEventSink{
-		clientGetter: s.clientGetter,
-		chartCache:   s.chartCache,
-	}
-	return cs.redisMockSetValueForChart(mock, key, url, opts)
-}
-
-func (cs *repoEventSink) redisMockSetValueForChart(mock redismock.ClientMock, key, url string, opts *common.ClientOptions) error {
+func redisMockSetValueForHttpChart(mock redismock.ClientMock, key, url string, opts *common.HttpClientOptions) error {
 	_, chartID, version, err := fromRedisKeyForChart(key)
 	if err != nil {
 		return err
 	}
-	byteArray, err := cache.ChartCacheComputeValue(chartID, url, version, opts)
+	fn := downloadHttpChartFn(opts)
+	byteArray, err := cache.ChartCacheComputeValue(chartID, url, version, fn)
+	if err != nil {
+		return fmt.Errorf("chartCacheComputeValue failed due to: %+v", err)
+	}
+	redisMockSetValueForChart(mock, key, byteArray)
+	return nil
+}
+
+func redisMockSetValueForOciChart(mock redismock.ClientMock, key, url string, ociRepo *OCIChartRepository) error {
+	_, chartID, version, err := fromRedisKeyForChart(key)
+	if err != nil {
+		return err
+	}
+	fn := downloadOCIChartFn(ociRepo)
+	byteArray, err := cache.ChartCacheComputeValue(chartID, url, version, fn)
 	if err != nil {
 		return fmt.Errorf("chartCacheComputeValue failed due to: %+v", err)
 	}
@@ -935,13 +1187,33 @@ func redisMockSetValueForChart(mock redismock.ClientMock, key string, byteArray 
 }
 
 // does a series of mock.ExpectGet(...)
-func redisMockExpectGetFromChartCache(mock redismock.ClientMock, key, url string, opts *common.ClientOptions) error {
+func redisMockExpectGetFromHttpChartCache(mock redismock.ClientMock, key, url string, opts *common.HttpClientOptions) error {
 	if url != "" {
 		_, chartID, version, err := fromRedisKeyForChart(key)
 		if err != nil {
 			return err
 		}
-		bytes, err := cache.ChartCacheComputeValue(chartID, url, version, opts)
+		fn := downloadHttpChartFn(opts)
+		bytes, err := cache.ChartCacheComputeValue(chartID, url, version, fn)
+		if err != nil {
+			return err
+		}
+		mock.ExpectGet(key).SetVal(string(bytes))
+	} else {
+		mock.ExpectGet(key).RedisNil()
+	}
+	return nil
+}
+
+// does a series of mock.ExpectGet(...)
+func redisMockExpectGetFromOciChartCache(mock redismock.ClientMock, key, url string, ociRepo *OCIChartRepository) error {
+	if url != "" {
+		_, chartID, version, err := fromRedisKeyForChart(key)
+		if err != nil {
+			return err
+		}
+		fn := downloadOCIChartFn(ociRepo)
+		bytes, err := cache.ChartCacheComputeValue(chartID, url, version, fn)
 		if err != nil {
 			return err
 		}
@@ -977,120 +1249,7 @@ func redisMockExpectDeleteRepoWithCharts(mock redismock.ClientMock, name types.N
 func fromRedisKeyForChart(key string) (namespace, chartID, chartVersion string, err error) {
 	parts := strings.Split(key, ":")
 	if len(parts) != 4 || parts[0] != "helmcharts" || len(parts[1]) == 0 || len(parts[2]) == 0 || len(parts[3]) == 0 {
-		return "", "", "", status.Errorf(codes.Internal, "invalid key [%s]", key)
+		return "", "", "", connect.NewError(connect.CodeInternal, fmt.Errorf("invalid key [%s]", key))
 	}
 	return parts[1], parts[2], parts[3], nil
-}
-
-func compareActualVsExpectedAvailablePackageDetail(t *testing.T, actual *corev1.AvailablePackageDetail, expected *corev1.AvailablePackageDetail) {
-	opt1 := cmpopts.IgnoreUnexported(corev1.AvailablePackageDetail{}, corev1.AvailablePackageReference{}, corev1.Context{}, corev1.Maintainer{}, plugins.Plugin{}, corev1.PackageAppVersion{})
-	// these few fields a bit special in that they are all very long strings,
-	// so we'll do a 'Contains' check for these instead of 'Equals'
-	opt2 := cmpopts.IgnoreFields(corev1.AvailablePackageDetail{}, "Readme", "DefaultValues", "ValuesSchema")
-	if got, want := actual, expected; !cmp.Equal(got, want, opt1, opt2) {
-		t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opt1, opt2))
-	}
-	if !strings.Contains(actual.Readme, expected.Readme) {
-		t.Errorf("substring mismatch (-want: %s\n+got: %s):\n", expected.Readme, actual.Readme)
-	}
-	if !strings.Contains(actual.DefaultValues, expected.DefaultValues) {
-		t.Errorf("substring mismatch (-want: %s\n+got: %s):\n", expected.DefaultValues, actual.DefaultValues)
-	}
-	if !strings.Contains(actual.ValuesSchema, expected.ValuesSchema) {
-		t.Errorf("substring mismatch (-want: %s\n+got: %s):\n", expected.ValuesSchema, actual.ValuesSchema)
-	}
-}
-
-// global vars
-
-var redis_charts_spec = []testSpecChartWithFile{
-	{
-		name:     "redis",
-		tgzFile:  "testdata/redis-14.4.0.tgz",
-		revision: "14.4.0",
-	},
-	{
-		name:     "redis",
-		tgzFile:  "testdata/redis-14.3.4.tgz",
-		revision: "14.3.4",
-	},
-}
-
-var expected_detail_redis_1 = &corev1.AvailablePackageDetail{
-	AvailablePackageRef: availableRef("bitnami-1/redis", "default"),
-	Name:                "redis",
-	Version: &corev1.PackageAppVersion{
-		PkgVersion: "14.4.0",
-		AppVersion: "6.2.4",
-	},
-	RepoUrl:          "https://example.repo.com/charts",
-	HomeUrl:          "https://github.com/bitnami/charts/tree/master/bitnami/redis",
-	IconUrl:          "https://bitnami.com/assets/stacks/redis/img/redis-stack-220x234.png",
-	DisplayName:      "redis",
-	Categories:       []string{"Database"},
-	ShortDescription: "Open source, advanced key-value store. It is often referred to as a data structure server since keys can contain strings, hashes, lists, sets and sorted sets.",
-	Readme:           "Redis<sup>TM</sup> Chart packaged by Bitnami\n\n[Redis<sup>TM</sup>](http://redis.io/) is an advanced key-value cache",
-	DefaultValues:    "## @param global.imageRegistry Global Docker image registry",
-	ValuesSchema:     "\"$schema\": \"http://json-schema.org/schema#\"",
-	SourceUrls:       []string{"https://github.com/bitnami/bitnami-docker-redis", "http://redis.io/"},
-	Maintainers: []*corev1.Maintainer{
-		{
-			Name:  "Bitnami",
-			Email: "containers@bitnami.com",
-		},
-		{
-			Name:  "desaintmartin",
-			Email: "cedric@desaintmartin.fr",
-		},
-	},
-}
-
-var expected_detail_redis_2 = &corev1.AvailablePackageDetail{
-	AvailablePackageRef: availableRef("bitnami-1/redis", "default"),
-	Name:                "redis",
-	Version: &corev1.PackageAppVersion{
-		PkgVersion: "14.3.4",
-		AppVersion: "6.2.4",
-	},
-	RepoUrl:          "https://example.repo.com/charts",
-	IconUrl:          "https://bitnami.com/assets/stacks/redis/img/redis-stack-220x234.png",
-	HomeUrl:          "https://github.com/bitnami/charts/tree/master/bitnami/redis",
-	DisplayName:      "redis",
-	Categories:       []string{"Database"},
-	ShortDescription: "Open source, advanced key-value store. It is often referred to as a data structure server since keys can contain strings, hashes, lists, sets and sorted sets.",
-	Readme:           "Redis<sup>TM</sup> Chart packaged by Bitnami\n\n[Redis<sup>TM</sup>](http://redis.io/) is an advanced key-value cache",
-	DefaultValues:    "## @param global.imageRegistry Global Docker image registry",
-	ValuesSchema:     "\"$schema\": \"http://json-schema.org/schema#\"",
-	SourceUrls:       []string{"https://github.com/bitnami/bitnami-docker-redis", "http://redis.io/"},
-	Maintainers: []*corev1.Maintainer{
-		{
-			Name:  "Bitnami",
-			Email: "containers@bitnami.com",
-		},
-		{
-			Name:  "desaintmartin",
-			Email: "cedric@desaintmartin.fr",
-		},
-	},
-}
-
-var expected_versions_redis = &corev1.GetAvailablePackageVersionsResponse{
-	PackageAppVersions: []*corev1.PackageAppVersion{
-		{PkgVersion: "14.4.0", AppVersion: "6.2.4"},
-		{PkgVersion: "14.3.4", AppVersion: "6.2.4"},
-		{PkgVersion: "14.3.3", AppVersion: "6.2.4"},
-		{PkgVersion: "14.3.2", AppVersion: "6.2.3"},
-		{PkgVersion: "14.2.1", AppVersion: "6.2.3"},
-		{PkgVersion: "14.2.0", AppVersion: "6.2.3"},
-		{PkgVersion: "13.0.1", AppVersion: "6.2.1"},
-		{PkgVersion: "13.0.0", AppVersion: "6.2.1"},
-		{PkgVersion: "12.10.1", AppVersion: "6.0.12"},
-		{PkgVersion: "12.10.0", AppVersion: "6.0.12"},
-		{PkgVersion: "12.9.2", AppVersion: "6.0.12"},
-		{PkgVersion: "12.9.1", AppVersion: "6.0.12"},
-		{PkgVersion: "12.9.0", AppVersion: "6.0.12"},
-		{PkgVersion: "12.8.3", AppVersion: "6.0.12"},
-		{PkgVersion: "12.8.2", AppVersion: "6.0.12"},
-		{PkgVersion: "12.8.1", AppVersion: "6.0.12"},
-	},
 }

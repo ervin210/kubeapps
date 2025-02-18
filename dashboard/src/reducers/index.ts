@@ -1,27 +1,31 @@
-import { connectRouter } from "connected-react-router";
-import { History } from "history";
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { combineReducers } from "redux";
 import { IStoreState } from "shared/types";
-import appsReducer from "./apps";
+import installedPackagesReducer from "./installedpackages";
 import authReducer from "./auth";
-import packageReducer from "./packages";
+import packageReducer from "./availablepackages";
 import clusterReducer from "./cluster";
 import configReducer from "./config";
 import kubeReducer from "./kube";
 import operatorReducer from "./operators";
 import reposReducer from "./repos";
 
-const rootReducer = (history: History) =>
+export const reducers = {
+  apps: installedPackagesReducer,
+  auth: authReducer,
+  packages: packageReducer,
+  config: configReducer,
+  kube: kubeReducer,
+  clusters: clusterReducer,
+  repos: reposReducer,
+  operators: operatorReducer,
+};
+
+const rootReducer = () =>
   combineReducers<IStoreState>({
-    router: connectRouter(history),
-    apps: appsReducer,
-    auth: authReducer,
-    packages: packageReducer,
-    config: configReducer,
-    kube: kubeReducer,
-    clusters: clusterReducer,
-    repos: reposReducer,
-    operators: operatorReducer,
+    ...reducers,
   });
 
 export default rootReducer;

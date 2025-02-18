@@ -1,18 +1,22 @@
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsIcon } from "@cds/react/icon";
-import Alert from "components/js/Alert";
+import AlertGroup from "components/AlertGroup";
+import LoadingWrapper from "components/LoadingWrapper";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import LoadingWrapper from "../LoadingWrapper/LoadingWrapper";
-import HeadingRenderer from "./HeadingRenderer";
-import LinkRenderer from "./LinkRenderer";
-import TableRenderer from "./TableRenderer";
+import HeadingRenderer from "../MarkdownRenderer/HeadingRenderer";
+import LinkRenderer from "../MarkdownRenderer/LinkRenderer";
+import TableRenderer from "../MarkdownRenderer/TableRenderer";
 
-interface IPackageReadmeProps {
+export interface IPackageReadmeProps {
   error?: string;
   readme?: string;
+  isFetching?: boolean;
 }
 
-function PackageReadme({ error, readme }: IPackageReadmeProps) {
+function PackageReadme({ error, readme, isFetching }: IPackageReadmeProps) {
   if (error) {
     if (error.toLocaleLowerCase().includes("not found")) {
       return (
@@ -24,16 +28,16 @@ function PackageReadme({ error, readme }: IPackageReadmeProps) {
         </div>
       );
     }
-    return <Alert theme="danger">Unable to fetch package README: {error}</Alert>;
+    return <AlertGroup status="danger">Unable to fetch the package's README: {error}.</AlertGroup>;
   }
   return (
     <LoadingWrapper
       className="margin-t-xxl"
       loadingText="Fetching application README..."
-      loaded={!!readme}
+      loaded={!isFetching}
     >
-      {readme && (
-        <div className="application-readme">
+      <div className="application-readme">
+        {readme ? (
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
@@ -50,8 +54,10 @@ function PackageReadme({ error, readme }: IPackageReadmeProps) {
           >
             {readme}
           </ReactMarkdown>
-        </div>
-      )}
+        ) : (
+          <p> This package does not contain a README file.</p>
+        )}
+      </div>
     </LoadingWrapper>
   );
 }

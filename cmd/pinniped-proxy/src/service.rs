@@ -1,3 +1,6 @@
+// Copyright 2020-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 use std::convert::Infallible;
 use std::env;
 
@@ -6,17 +9,21 @@ use hyper::{Body, Request, Response, StatusCode};
 use log::{error, info};
 use native_tls::TlsConnector;
 
-use crate::https;
-use crate::logging;
-use crate::pinniped;
+use crate::{
+    https, logging,
+    {pinniped, pinniped::CredentialCache},
+};
 
-/// The proxy service accepts a request and returns the proxied response from the api server.
+/// The proxy service accepts a request and returns the proxied response from
+/// the api server.
 ///
-/// The request must include an authorization token which is exchanged with pinniped-concierge
-/// for an X509 client identity cert with which the request is forwarded on.
+/// The request must include an authorization token which is exchanged with
+/// pinniped-concierge for an X509 client identity cert with which the request
+/// is forwarded on.
 pub async fn proxy(
     mut req: Request<Body>,
     default_ca_data: Vec<u8>,
+    credential_cache: CredentialCache,
 ) -> Result<Response<Body>, Infallible> {
     let mut log_data = logging::request_log_data(&req);
     let k8s_api_server_url = match https::get_api_server_url(req.headers()) {
@@ -62,14 +69,17 @@ pub async fn proxy(
     // the client cert. It'd be nice if we could do the construction once and just
     // clone to add the client cert?
     let mut tls_builder = &mut TlsConnector::builder();
-    // Ensure we can talk to the k8s api server via TLS by setting the api server cert.
+    // Ensure we can talk to the k8s api server via TLS by setting the api server
+    // cert.
     tls_builder = tls_builder.add_root_certificate(k8s_api_cert.clone());
-    // Ensure the user is authenticated by exchanging the header authz token for a client identity X509 cert.
+    // Ensure the user is authenticated by exchanging the header authz token for a
+    // client identity X509 cert.
     tls_builder = match https::include_client_identity_for_headers(
         tls_builder,
         req.headers().clone(),
         &k8s_api_server_url,
         &cert_auth_data,
+        credential_cache,
     )
     .await
     {
@@ -84,7 +94,6 @@ pub async fn proxy(
             return handle_error(e, StatusCode::INTERNAL_SERVER_ERROR, log_data);
         }
     };
-
     let client = match https::make_https_client(tls_builder) {
         Ok(c) => c,
         Err(e) => return handle_error(e, StatusCode::INTERNAL_SERVER_ERROR, log_data),
@@ -94,7 +103,6 @@ pub async fn proxy(
         Ok(r) => {
             info!("{}", logging::response_log_data(&r, log_data));
             if r.status() == StatusCode::SWITCHING_PROTOCOLS {
-                // TODO(agamez): implement ws proxing here; see https://github.com/kubeapps/kubeapps/issues/2328
                 Ok(Response::builder()
                     .status(StatusCode::NOT_IMPLEMENTED)
                     .body(Body::from("pinniped-proxy does not support websockets yet"))
@@ -103,13 +111,11 @@ pub async fn proxy(
                 Ok(r)
             }
         }
-        Err(e) => {
-            return handle_error(
-                anyhow::anyhow!(e),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                log_data,
-            )
-        }
+        Err(e) => handle_error(
+            anyhow::anyhow!(e),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            log_data,
+        ),
     }
 }
 

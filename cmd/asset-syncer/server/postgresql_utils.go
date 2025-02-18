@@ -1,18 +1,5 @@
-/*
-Copyright 2021 VMware. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 package server
 
@@ -24,9 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kubeapps/kubeapps/pkg/chart/models"
-	"github.com/kubeapps/kubeapps/pkg/dbutils"
 	_ "github.com/lib/pq"
+	"github.com/vmware-tanzu/kubeapps/pkg/chart/models"
+	"github.com/vmware-tanzu/kubeapps/pkg/dbutils"
+	log "k8s.io/klog/v2"
 )
 
 var ErrMultipleRows = fmt.Errorf("more than one row returned in query result")
@@ -35,8 +23,8 @@ type postgresAssetManager struct {
 	*dbutils.PostgresAssetManager
 }
 
-func newPGManager(config dbutils.Config, globalReposNamespace string) (assetManager, error) {
-	m, err := dbutils.NewPGManager(config, globalReposNamespace)
+func newPGManager(config dbutils.Config, globalPackagingNamespace string) (assetManager, error) {
+	m, err := dbutils.NewPGManager(config, globalPackagingNamespace)
 	if err != nil {
 		return nil, err
 	}
@@ -52,29 +40,32 @@ func newPGManager(config dbutils.Config, globalReposNamespace string) (assetMana
 // These steps are processed in this way to ensure relevant chart data is
 // imported into the database as fast as possible. E.g. we want all icons for
 // charts before fetching readmes for each chart and version pair.
-func (m *postgresAssetManager) Sync(repo models.Repo, charts []models.Chart) error {
-	m.InitTables()
-
-	// Ensure the repo exists so FK constraints will be met.
+func (m *postgresAssetManager) Sync(repo models.AppRepository, chart models.Chart) error {
 	_, err := m.EnsureRepoExists(repo.Namespace, repo.Name)
 	if err != nil {
 		return err
 	}
 
-	err = m.importCharts(charts, repo)
+	d, err := json.Marshal(chart)
 	if err != nil {
 		return err
 	}
-
-	// Remove charts no longer existing in index
-	return m.removeMissingCharts(repo, charts)
+	_, err = m.DB.Exec(fmt.Sprintf(`INSERT INTO %s (repo_namespace, repo_name, chart_id, info)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (chart_id, repo_namespace, repo_name)
+		DO UPDATE SET info = $4
+		`, dbutils.ChartTable), repo.Namespace, repo.Name, chart.ID, string(d))
+	return err
 }
 
-func (m *postgresAssetManager) LastChecksum(repo models.Repo) string {
+func (m *postgresAssetManager) LastChecksum(repo models.AppRepository) string {
 	var lastChecksum string
 	row := m.DB.QueryRow(fmt.Sprintf("SELECT checksum FROM %s WHERE name = $1 AND namespace = $2", dbutils.RepositoryTable), repo.Name, repo.Namespace)
 	if row != nil {
-		row.Scan(&lastChecksum)
+		err := row.Scan(&lastChecksum)
+		if err != nil {
+			return ""
+		}
 	}
 	return lastChecksum
 }
@@ -92,39 +83,25 @@ func (m *postgresAssetManager) UpdateLastCheck(repoNamespace, repoName, checksum
 	return err
 }
 
-func (m *postgresAssetManager) importCharts(charts []models.Chart, repo models.Repo) error {
-	for _, chart := range charts {
-		d, err := json.Marshal(chart)
-		if err != nil {
-			return err
-		}
-		_, err = m.DB.Exec(fmt.Sprintf(`INSERT INTO %s (repo_namespace, repo_name, chart_id, info)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (chart_id, repo_namespace, repo_name)
-		DO UPDATE SET info = $4
-		`, dbutils.ChartTable), repo.Namespace, repo.Name, chart.ID, string(d))
-		if err != nil {
-			return err
-		}
+func (m *postgresAssetManager) RemoveMissingCharts(repo models.AppRepository, chartNames []string) error {
+	if len(chartNames) == 0 {
+		log.V(4).Infof("No synced charts missing from repository. Nothing to remove.")
+		return nil
 	}
-
-	return nil
-}
-
-func (m *postgresAssetManager) removeMissingCharts(repo models.Repo, charts []models.Chart) error {
-	var chartIDs []string
-	for _, chart := range charts {
-		chartIDs = append(chartIDs, fmt.Sprintf("'%s'", chart.ID))
+	var quotedChartNames []string
+	for _, chartName := range chartNames {
+		quotedChartNames = append(quotedChartNames, fmt.Sprintf("'%s'", chartName))
 	}
-	chartIDsString := strings.Join(chartIDs, ", ")
-	rows, err := m.DB.Query(fmt.Sprintf("DELETE FROM %s WHERE chart_id NOT IN (%s) AND repo_name = $1 AND repo_namespace = $2", dbutils.ChartTable, chartIDsString), repo.Name, repo.Namespace)
+	chartNamesString := strings.Join(quotedChartNames, ", ")
+	log.V(4).Infof("Removing the following charts that are no longer present in the repo: %s", chartNamesString)
+	rows, err := m.DB.Query(fmt.Sprintf("DELETE FROM %s WHERE info->>'name' IN (%s) AND repo_name = $1 AND repo_namespace = $2", dbutils.ChartTable, chartNamesString), repo.Name, repo.Namespace)
 	if rows != nil {
 		defer rows.Close()
 	}
 	return err
 }
 
-func (m *postgresAssetManager) Delete(repo models.Repo) error {
+func (m *postgresAssetManager) Delete(repo models.AppRepository) error {
 	rows, err := m.DB.Query(fmt.Sprintf("DELETE FROM %s WHERE name = $1 AND namespace = $2", dbutils.RepositoryTable), repo.Name, repo.Namespace)
 	if rows != nil {
 		defer rows.Close()
@@ -132,7 +109,7 @@ func (m *postgresAssetManager) Delete(repo models.Repo) error {
 	return err
 }
 
-func (m *postgresAssetManager) updateIcon(repo models.Repo, data []byte, contentType, ID string) error {
+func (m *postgresAssetManager) updateIcon(repo models.AppRepository, data []byte, contentType, ID string) error {
 	rows, err := m.DB.Query(fmt.Sprintf(
 		`UPDATE charts SET info = info || '{"raw_icon": "%s", "icon_content_type": "%s"}' WHERE chart_id = $1 AND repo_namespace = $2 AND repo_name = $3 RETURNING ID`,
 		base64.StdEncoding.EncodeToString(data), contentType,
@@ -154,7 +131,7 @@ func (m *postgresAssetManager) updateIcon(repo models.Repo, data []byte, content
 	return err
 }
 
-func (m *postgresAssetManager) filesExist(repo models.Repo, chartFilesID, digest string) bool {
+func (m *postgresAssetManager) filesExist(repo models.AppRepository, chartFilesID, digest string) bool {
 	var exists bool
 	err := m.DB.QueryRow(
 		fmt.Sprintf(`
@@ -183,4 +160,21 @@ func (m *postgresAssetManager) insertFiles(chartId string, files models.ChartFil
 		defer rows.Close()
 	}
 	return err
+}
+
+// ChartsForRepo returns a map of charts with all previously synced charts in
+// the repo.
+func (m *postgresAssetManager) ChartsForRepo(repo models.AppRepository) (map[string]*models.Chart, error) {
+	dbQuery := fmt.Sprintf("SELECT info FROM %s WHERE repo_namespace = $1 AND repo_name = $2 ORDER BY (info->>'name')", dbutils.ChartTable)
+
+	charts, err := m.QueryAllCharts(dbQuery, repo.Namespace, repo.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	chartsByName := map[string]*models.Chart{}
+	for _, chart := range charts {
+		chartsByName[chart.Name] = chart
+	}
+	return chartsByName, nil
 }

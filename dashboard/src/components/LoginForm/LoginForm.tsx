@@ -1,47 +1,76 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsIcon } from "@cds/react/icon";
-import { Location } from "history";
+import actions from "actions";
+import LoadingWrapper from "components/LoadingWrapper";
+import qs from "qs";
 import { useEffect, useState } from "react";
 import { useIntl } from "react-intl";
-import { Redirect } from "react-router-dom";
-import LoadingWrapper from "../../components/LoadingWrapper";
+import { useDispatch, useSelector } from "react-redux";
+import * as ReactRouter from "react-router-dom";
+import { ThunkDispatch } from "redux-thunk";
+import { IStoreState } from "shared/types";
+import { Action } from "typesafe-actions";
 import "./LoginForm.css";
 import OAuthLogin from "./OauthLogin";
 import TokenLogin from "./TokenLogin";
-import { useSelector } from "react-redux";
-import { IStoreState } from "shared/types";
 
-export interface ILoginFormProps {
-  cluster: string;
-  authenticated: boolean;
-  authenticating: boolean;
-  authenticationError: string | undefined;
-  oauthLoginURI: string;
-  authProxySkipLoginPage: boolean;
-  authenticate: (cluster: string, token: string) => any;
-  checkCookieAuthentication: (cluster: string) => Promise<boolean>;
-  appVersion: string;
-  location: Location;
-}
-
-function LoginForm(props: ILoginFormProps) {
+function LoginForm() {
   const intl = useIntl();
   const [token, setToken] = useState("");
   const [cookieChecked, setCookieChecked] = useState(false);
-  const { checkCookieAuthentication } = props;
+  const [queryParamTokenAttempted, setQueryParamTokenAttempted] = useState(false);
+
+  const dispatch: ThunkDispatch<IStoreState, null, Action> = useDispatch();
+
+  const location = ReactRouter.useLocation();
+  const queryParamToken =
+    qs.parse(location.search, { ignoreQueryPrefix: true }).token?.toString() || "";
 
   const {
-    config: { authProxyEnabled },
+    config: { appVersion, authProxyEnabled, oauthLoginURI, authProxySkipLoginPage },
+    clusters: { currentCluster: cluster },
+    auth: { authenticated, authenticating, authenticationError },
   } = useSelector((state: IStoreState) => state);
 
+  const oAuthEnabledAndConfigured = authProxyEnabled && oauthLoginURI !== "";
+
+  if (oAuthEnabledAndConfigured && authProxySkipLoginPage) {
+    // If the oauth login page should be skipped, simply redirect to the login URI.
+    window.location.replace(oauthLoginURI);
+  }
+
   useEffect(() => {
-    if (authProxyEnabled) {
-      checkCookieAuthentication(props.cluster).then(() => setCookieChecked(true));
+    if (oAuthEnabledAndConfigured) {
+      dispatch(actions.auth.checkCookieAuthentication(cluster)).then(() => setCookieChecked(true));
     } else {
       setCookieChecked(true);
     }
-  }, [authProxyEnabled, checkCookieAuthentication, props.cluster]);
+  }, [dispatch, oAuthEnabledAndConfigured, cluster]);
 
-  if (props.authenticating || !cookieChecked) {
+  useEffect(() => {
+    // In token auth, if not yet authenticated, if the token is passed in the query param,
+    // use it straight away; if it fails, stop don't retry
+    if (
+      !oAuthEnabledAndConfigured &&
+      !authenticated &&
+      !queryParamTokenAttempted &&
+      queryParamToken !== ""
+    ) {
+      setQueryParamTokenAttempted(true);
+      dispatch(actions.auth.authenticate(cluster, queryParamToken, false));
+    }
+  }, [
+    cluster,
+    authenticated,
+    dispatch,
+    oAuthEnabledAndConfigured,
+    queryParamToken,
+    queryParamTokenAttempted,
+  ]);
+
+  if (authenticating || !cookieChecked) {
     return (
       <LoadingWrapper
         className="margin-t-xxl"
@@ -50,43 +79,35 @@ function LoginForm(props: ILoginFormProps) {
       />
     );
   }
-  if (props.authenticated) {
-    const { from } = (props.location.state as any) || { from: { pathname: "/" } };
-    return <Redirect to={from} />;
+  if (authenticated) {
+    const { from } = (location.state as any) || { from: { pathname: "/" } };
+    return <ReactRouter.Navigate to={from} />;
   }
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    return token && (await props.authenticate(props.cluster, token));
+    return token && (await dispatch(actions.auth.authenticate(cluster, token, false)));
   };
 
   const handleTokenChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setToken(e.target.value);
   };
 
-  if (props.oauthLoginURI && props.authProxySkipLoginPage) {
-    // If the oauth login page should be skipped, simply redirect to the login URI.
-    window.location.replace(props.oauthLoginURI);
-  }
-
   return (
     <div className="login-wrapper">
       <form className="login clr-form" onSubmit={handleSubmit}>
-        {props.oauthLoginURI ? (
-          <OAuthLogin
-            authenticationError={props.authenticationError}
-            oauthLoginURI={props.oauthLoginURI}
-          />
+        {oAuthEnabledAndConfigured ? (
+          <OAuthLogin authenticationError={authenticationError} oauthLoginURI={oauthLoginURI} />
         ) : (
           <TokenLogin
-            authenticationError={props.authenticationError}
+            authenticationError={authenticationError}
             token={token}
             handleTokenChange={handleTokenChange}
           />
         )}
         <div className="login-moreinfo">
           <a
-            href={`https://github.com/kubeapps/kubeapps/blob/${props.appVersion}/docs/user/access-control.md`}
+            href={`https://github.com/vmware-tanzu/kubeapps/blob/${appVersion}/site/content/docs/latest/howto/access-control.md`}
             target="_blank"
             rel="noopener noreferrer"
           >

@@ -1,16 +1,17 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsButton } from "@cds/react/button";
 import actions from "actions";
-import Alert from "components/js/Alert";
+import AlertGroup from "components/AlertGroup";
 import * as ReactRedux from "react-redux";
-import { defaultStore, getStore, initialState, mountWrapper } from "shared/specs/mountWrapper";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { IClusterState } from "reducers/cluster";
+import { IOperatorsState } from "reducers/operators";
+import { getStore, initialState, mountWrapper } from "shared/specs/mountWrapper";
+import { IStoreState } from "shared/types";
 import OperatorDescription from "./OperatorDescription";
 import OperatorView from "./OperatorView";
-
-const defaultProps = {
-  operatorName: "foo",
-  cluster: initialState.config.kubeappsCluster,
-  namespace: "kubeapps",
-};
 
 const defaultOperator = {
   metadata: {
@@ -32,7 +33,7 @@ const defaultOperator = {
           description: "this is a testing operator",
           annotations: {
             capabilities: "Basic Install",
-            repository: "github.com/kubeapps/kubeapps",
+            repository: "github.com/vmware-tanzu/kubeapps",
             containerImage: "kubeapps/kubeapps",
             createdAt: "one day",
           },
@@ -44,7 +45,7 @@ const defaultOperator = {
 } as any;
 
 let spyOnUseDispatch: jest.SpyInstance;
-const kubeaActions = { ...actions.operators };
+const kubeActions = { ...actions.operators };
 beforeEach(() => {
   actions.operators = {
     ...actions.operators,
@@ -56,55 +57,90 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  actions.operators = { ...kubeaActions };
+  actions.operators = { ...kubeActions };
   spyOnUseDispatch.mockRestore();
 });
 
 it("calls getOperator when mounting the component", () => {
   const getOperator = jest.fn();
   actions.operators.getOperator = getOperator;
-  mountWrapper(defaultStore, <OperatorView {...defaultProps} />);
-  expect(getOperator).toHaveBeenCalledWith(
-    defaultProps.cluster,
-    defaultProps.namespace,
-    defaultProps.operatorName,
+  const store = getStore({
+    operators: { operator: defaultOperator } as Partial<IOperatorsState>,
+    clusters: {
+      currentCluster: "default-cluster",
+      clusters: {
+        "default-cluster": {
+          currentNamespace: "kubeapps",
+        } as Partial<IClusterState>,
+      },
+    },
+  } as Partial<IStoreState>);
+
+  mountWrapper(
+    store,
+    <MemoryRouter initialEntries={["/c/default/ns/default/operators/foo"]}>
+      <Routes>
+        <Route path={"/c/:cluster/ns/:namespace/operators/:operator"} element={<OperatorView />} />
+      </Routes>
+    </MemoryRouter>,
+    false,
   );
+
+  expect(getOperator).toHaveBeenCalledWith("default-cluster", "kubeapps", "foo");
 });
 
 it("tries to get the CSV for the current operator", () => {
   const getCSV = jest.fn();
   actions.operators.getCSV = getCSV;
-  mountWrapper(
-    getStore({ operators: { operator: defaultOperator } }),
-    <OperatorView {...defaultProps} />,
-  );
+  const store = getStore({
+    operators: { operator: defaultOperator } as Partial<IOperatorsState>,
+    clusters: {
+      currentCluster: "default-cluster",
+      clusters: {
+        "default-cluster": {
+          currentNamespace: "kubeapps",
+        } as Partial<IClusterState>,
+      },
+    },
+  } as Partial<IStoreState>);
 
-  expect(getCSV).toHaveBeenCalledWith(
-    defaultProps.cluster,
-    defaultOperator.metadata.namespace,
-    defaultOperator.status.channels[0].currentCSV,
-  );
+  mountWrapper(store, <OperatorView />);
+
+  expect(getCSV).toHaveBeenCalledWith("default-cluster", "kubeapps", "foo.1.0.0");
 });
 
 it("shows an error if it exists", () => {
   const wrapper = mountWrapper(
-    getStore({ operators: { errors: { operator: { fetch: new Error("boom") } } } }),
-    <OperatorView {...defaultProps} />,
+    getStore({
+      operators: { errors: { operator: { fetch: new Error("boom") } } },
+    } as Partial<IStoreState>),
+    <OperatorView />,
   );
-  expect(wrapper.find(Alert)).toIncludeText("boom");
+  expect(wrapper.find(AlertGroup)).toIncludeText("boom");
 });
 
 it("shows an error if the operator doesn't have any channel defined", () => {
   const operator = {
+    ...initialState.operators.operator,
     status: {
+      ...initialState.operators.operator?.status,
       channels: [],
     },
   };
+  const store = getStore({
+    ...initialState,
+    operators: { ...initialState.operators, operator },
+  } as Partial<IStoreState>);
   const wrapper = mountWrapper(
-    getStore({ operators: { operator } }),
-    <OperatorView {...defaultProps} />,
+    store,
+    <MemoryRouter initialEntries={["/c/default/ns/default/operators/foo"]}>
+      <Routes>
+        <Route path={"/c/:cluster/ns/:namespace/operators/:operator"} element={<OperatorView />} />
+      </Routes>
+    </MemoryRouter>,
+    false,
   );
-  expect(wrapper.find(Alert)).toIncludeText(
+  expect(wrapper.find(AlertGroup)).toIncludeText(
     "Operator foo doesn't define a valid channel. This is needed to extract required info",
   );
 });
@@ -118,8 +154,8 @@ it("selects the default channel", () => {
     },
   };
   const wrapper = mountWrapper(
-    getStore({ operators: { operator } }),
-    <OperatorView {...defaultProps} />,
+    getStore({ operators: { operator } } as Partial<IStoreState>),
+    <OperatorView />,
   );
   expect(wrapper.find(OperatorDescription).prop("description")).toEqual(
     "this is a testing operator",
@@ -133,8 +169,8 @@ it("disables the Header deploy button if the subscription already exists", () =>
         operator: defaultOperator,
         subscriptions: [{ spec: { name: defaultOperator.metadata.name } }],
       },
-    }),
-    <OperatorView {...defaultProps} />,
+    } as Partial<IStoreState>),
+    <OperatorView />,
   );
   wrapper.find(CdsButton).forEach(button => expect(button).toBeDisabled());
 });

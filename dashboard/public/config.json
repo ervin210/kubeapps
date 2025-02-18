@@ -1,7 +1,8 @@
 {
   "kubeappsCluster": "default",
   "kubeappsNamespace": "kubeapps",
-  "globalReposNamespace": "kubeapps",
+  "helmGlobalNamespace": "kubeapps",
+  "carvelGlobalNamespace": "kapp-controller-packaging-global",
   "appVersion": "DEVEL",
   "authProxyEnabled": false,
   "authProxySkipLoginPage": false,
@@ -9,10 +10,14 @@
   "oauthLogoutURI": "/oauth2/sign_out",
   "clusters": ["default"],
   "featureFlags": {
-    "operators": false
+    "operators": false,
+    "schemaEditor": {
+      "enabled": false
+    }
   },
   "theme": "light",
   "remoteComponentsUrl": "",
   "customAppViews": [],
-  "skipAvailablePackageDetails": false
+  "skipAvailablePackageDetails": false,
+  "createNamespaceLabels": {}
 }

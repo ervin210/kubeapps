@@ -1,12 +1,16 @@
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsButton } from "@cds/react/button";
+import { waitFor } from "@testing-library/react";
 import actions from "actions";
 import {
   InstalledPackageReference,
   InstalledPackageStatus,
   InstalledPackageStatus_StatusReason,
-} from "gen/kubeappsapis/core/packages/v1alpha1/packages";
+} from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 import * as ReactRedux from "react-redux";
-import ReactTooltip from "react-tooltip";
+import { Tooltip } from "react-tooltip";
 import { defaultStore, mountWrapper } from "shared/specs/mountWrapper";
 import UpgradeButton from "./UpgradeButton";
 
@@ -20,10 +24,10 @@ const defaultProps = {
 };
 
 let spyOnUseDispatch: jest.SpyInstance;
-const kubeaActions = { ...actions.kube };
+const kubeActions = { ...actions.kube };
 beforeEach(() => {
-  actions.apps = {
-    ...actions.apps,
+  actions.installedpackages = {
+    ...actions.installedpackages,
     updateInstalledPackage: jest.fn(),
   };
   const mockDispatch = jest.fn();
@@ -31,7 +35,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  actions.kube = { ...kubeaActions };
+  actions.kube = { ...kubeActions };
   spyOnUseDispatch.mockRestore();
 });
 
@@ -40,12 +44,15 @@ it("should render a deactivated button if when passing an in-progress status", a
     ...defaultProps,
     releaseStatus: {
       ready: false,
-      reason: InstalledPackageStatus_StatusReason.STATUS_REASON_PENDING,
+      reason: InstalledPackageStatus_StatusReason.PENDING,
       userReason: "Pending",
     } as InstalledPackageStatus,
   };
   const wrapper = mountWrapper(defaultStore, <UpgradeButton {...disabledProps} />);
 
   expect(wrapper.find(CdsButton)).toBeDisabled();
-  expect(wrapper.find(ReactTooltip)).toExist();
+
+  await waitFor(() => {
+    expect(wrapper.find(Tooltip).prop("children")).toBe("The application is pending installation.");
+  });
 });

@@ -1,5 +1,9 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { deepClone } from "@cds/core/internal";
 import actions from "actions";
+import AlertGroup from "components/AlertGroup";
 import LoadingWrapper from "components/LoadingWrapper";
 import SearchFilter from "components/SearchFilter/SearchFilter";
 import {
@@ -10,71 +14,76 @@ import {
   InstalledPackageSummary,
   PackageAppVersion,
   VersionReference,
-} from "gen/kubeappsapis/core/packages/v1alpha1/packages";
-import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins";
+} from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
+import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins_pb";
 import context from "jest-plugin-context";
 import qs from "qs";
-import React from "react";
-import { act } from "react-dom/test-utils";
 import * as ReactRedux from "react-redux";
 import { MemoryRouter } from "react-router-dom";
 import { Kube } from "shared/Kube";
-import { defaultStore, getStore, initialState, mountWrapper } from "shared/specs/mountWrapper";
+import {
+  defaultStore,
+  getStore,
+  initialState,
+  mountWrapper,
+  renderWithProviders,
+} from "shared/specs/mountWrapper";
 import { FetchError, IStoreState } from "shared/types";
-import Alert from "../js/Alert";
 import AppList from "./AppList";
 import AppListItem from "./AppListItem";
 import CustomResourceListItem from "./CustomResourceListItem";
+import { screen } from "@testing-library/react";
 
 let spyOnUseDispatch: jest.SpyInstance;
 const opActions = { ...actions.operators };
-const appActions = { ...actions.apps };
+const appActions = { ...actions.installedpackages };
 beforeEach(() => {
   actions.operators = {
     ...actions.operators,
     getResources: jest.fn(),
   };
-  actions.apps = {
-    ...actions.apps,
-    fetchApps: jest.fn(),
+  actions.installedpackages = {
+    ...actions.installedpackages,
+    fetchInstalledPackages: jest.fn(),
   };
   const mockDispatch = jest.fn();
   spyOnUseDispatch = jest.spyOn(ReactRedux, "useDispatch").mockReturnValue(mockDispatch);
   Kube.canI = jest.fn().mockReturnValue({
     then: jest.fn(f => f(true)),
+    catch: jest.fn(f => f(false)),
   });
 });
 
 afterEach(() => {
   actions.operators = { ...opActions };
-  actions.apps = { ...appActions };
+  actions.installedpackages = { ...appActions };
   spyOnUseDispatch.mockRestore();
 });
 
 context("when changing props", () => {
   it("should fetch apps in the new namespace", async () => {
     const state = deepClone(initialState) as IStoreState;
-    state.config.featureFlags = { operators: true };
+    state.config.featureFlags = { ...initialState.config.featureFlags, operators: true };
     const store = getStore(state);
-    const fetchApps = jest.fn();
+    const fetchInstalledPackages = jest.fn();
     const getCustomResources = jest.fn();
-    actions.apps.fetchApps = fetchApps;
+    actions.installedpackages.fetchInstalledPackages = fetchInstalledPackages;
     actions.operators.getResources = getCustomResources;
     mountWrapper(store, <AppList />);
-    expect(fetchApps).toHaveBeenCalledWith("default-cluster", "default");
+    expect(fetchInstalledPackages).toHaveBeenCalledWith("default-cluster", "default");
     expect(getCustomResources).toHaveBeenCalledWith("default-cluster", "default");
   });
 
   it("should not fetch resources in the new namespace when operators is deactivated", async () => {
     const state = deepClone(initialState) as IStoreState;
-    state.config.featureFlags = { operators: false };
+    state.config.featureFlags = { ...initialState.config.featureFlags, operators: false };
     const store = getStore(state);
-    const fetchApps = jest.fn();
+    const fetchInstalledPackages = jest.fn();
     const getCustomResources = jest.fn();
-    actions.apps.fetchApps = fetchApps;
+    actions.installedpackages.fetchInstalledPackages = fetchInstalledPackages;
     actions.operators.getResources = getCustomResources;
     mountWrapper(store, <AppList />);
-    expect(fetchApps).toHaveBeenCalledWith("default-cluster", "default");
+    expect(fetchInstalledPackages).toHaveBeenCalledWith("default-cluster", "default");
     expect(getCustomResources).not.toHaveBeenCalled();
   });
 
@@ -87,75 +96,87 @@ context("when changing props", () => {
       <MemoryRouter initialEntries={["/foo?q=foo"]}>
         <AppList />
       </MemoryRouter>,
+      false,
     );
     expect(wrapper.find(SearchFilter).prop("value")).toEqual("foo");
   });
 
-  it("should list apps in all namespaces", () => {
-    jest.spyOn(qs, "parse").mockReturnValue({
-      allns: "yes",
+  it("should fetch apps in all namespaces", async () => {
+    const fetchInstalledPackages = jest.fn();
+    const getCustomResources = jest.fn();
+    actions.installedpackages.fetchInstalledPackages = fetchInstalledPackages;
+    actions.operators.getResources = getCustomResources;
+
+    renderWithProviders(<AppList />, {
+      preloadedState: {
+        clusters: {
+          currentCluster: "default-cluster",
+          clusters: {
+            "default-cluster": {
+              currentNamespace: "default",
+            },
+          },
+        },
+        config: {
+          featureFlags: {
+            operators: true,
+          },
+        },
+      },
+      initialEntries: ["/c/default-cluster/ns/default/apps?allns=no"],
     });
-    const wrapper = mountWrapper(
-      defaultStore,
-      <MemoryRouter initialEntries={["/foo?allns=yes"]}>
-        <AppList />
-      </MemoryRouter>,
-    );
-    expect(wrapper.find("input[type='checkbox']")).toBeChecked();
+
+    expect(fetchInstalledPackages).toHaveBeenCalledTimes(1);
+    expect(fetchInstalledPackages).toHaveBeenCalledWith("default-cluster", "default");
+    expect(getCustomResources).toHaveBeenCalledTimes(1);
+    expect(getCustomResources).toHaveBeenCalledWith("default-cluster", "default");
+
+    screen.getByRole("checkbox").click();
+
+    expect(fetchInstalledPackages).toHaveBeenCalledTimes(2);
+    expect(fetchInstalledPackages).toHaveBeenCalledWith("default-cluster", "");
+    expect(getCustomResources).toHaveBeenCalledTimes(2);
+    expect(getCustomResources).toHaveBeenCalledWith("default-cluster", "");
   });
 
-  it("should fetch apps in all namespaces", async () => {
-    const state = deepClone(initialState) as IStoreState;
-    state.config.featureFlags = { operators: true };
-    const store = getStore(state);
-    const fetchApps = jest.fn();
+  it("should not requests apps if namespace not set", async () => {
+    // If a page is reloaded, the namespace is not yet set in the state, so sending
+    // off a request at that point returns apps for all namespaces.
+    const fetchInstalledPackages = jest.fn();
     const getCustomResources = jest.fn();
-    actions.apps.fetchApps = fetchApps;
+    actions.installedpackages.fetchInstalledPackages = fetchInstalledPackages;
     actions.operators.getResources = getCustomResources;
-    const wrapper = mountWrapper(store, <AppList />);
-    act(() => {
-      wrapper.find("input[type='checkbox']").simulate("change");
+
+    renderWithProviders(<AppList />, {
+      preloadedState: {
+        clusters: {
+          currentCluster: "default-cluster",
+          clusters: {
+            "default-cluster": {
+              currentNamespace: "",
+            },
+          },
+        },
+        config: {
+          featureFlags: {
+            operators: true,
+          },
+        },
+      },
+      initialEntries: ["/c/default-cluster/ns/default/apps?allns=no"],
     });
-    expect(fetchApps).toHaveBeenCalledWith("default-cluster", "");
-    expect(getCustomResources).toHaveBeenCalledWith("default-cluster", "");
+
+    expect(fetchInstalledPackages).toHaveBeenCalledTimes(0);
+    expect(getCustomResources).toHaveBeenCalledTimes(0);
   });
 
   it("should hide the all-namespace switch if the user doesn't have permissions", async () => {
     Kube.canI = jest.fn().mockReturnValue({
       then: jest.fn((f: any) => f(false)),
+      catch: jest.fn(f => f(false)),
     });
     const wrapper = mountWrapper(defaultStore, <AppList />);
     expect(wrapper.find("input[type='checkbox']")).not.toExist();
-  });
-
-  describe("when store changes", () => {
-    let spyOnUseState: jest.SpyInstance;
-    afterEach(() => {
-      spyOnUseState.mockRestore();
-    });
-
-    it("should not set all-ns prop when getting changes in the namespace", async () => {
-      const setAllNS = jest.fn();
-      const useState = jest.fn();
-      spyOnUseState = jest
-        .spyOn(React, "useState")
-        /* @ts-expect-error: Argument of type '(init: any) => any[]' is not assignable to parameter of type '() => [unknown, Dispatch<unknown>]' */
-        .mockImplementation((init: any) => {
-          if (init === false) {
-            // Mocking the result of setAllNS
-            return [false, setAllNS];
-          }
-          return [init, useState];
-        });
-
-      mountWrapper(
-        defaultStore,
-        <MemoryRouter initialEntries={["/foo?allns=yes"]}>
-          <AppList />
-        </MemoryRouter>,
-      );
-      expect(setAllNS).not.toHaveBeenCalledWith(false);
-    });
   });
 });
 
@@ -206,8 +227,8 @@ context("when an error is present", () => {
 
   it("renders a generic error message", () => {
     const wrapper = mountWrapper(getStore(state), <AppList />);
-    expect(wrapper.find(Alert)).toExist();
-    expect(wrapper.find(Alert).html()).toContain("Boom!");
+    expect(wrapper.find(AlertGroup)).toExist();
+    expect(wrapper.find(AlertGroup).html()).toContain("Boom!");
   });
 
   it("renders a Application header (when error)", () => {
@@ -222,15 +243,14 @@ context("when apps available", () => {
     state.apps.listOverview = [
       {
         name: "foo",
-        installedPackageRef: {
+        installedPackageRef: new InstalledPackageReference({
           identifier: "bar/foo",
-          pkgVersion: "1.0.0",
           context: { cluster: "", namespace: "foobar" } as Context,
           plugin: { name: "my.plugin", version: "0.0.1" } as Plugin,
-        } as InstalledPackageReference,
+        }),
         status: {
           ready: true,
-          reason: InstalledPackageStatus_StatusReason.STATUS_REASON_INSTALLED,
+          reason: InstalledPackageStatus_StatusReason.INSTALLED,
           userReason: "deployed",
         } as InstalledPackageStatus,
         latestMatchingVersion: { appVersion: "0.1.0", pkgVersion: "1.0.0" } as PackageAppVersion,
@@ -255,15 +275,14 @@ context("when apps available", () => {
     state.apps.listOverview = [
       {
         name: "foo",
-        installedPackageRef: {
+        installedPackageRef: new InstalledPackageReference({
           identifier: "foo/bar",
-          pkgVersion: "1.0.0",
           context: { cluster: "", namespace: "fooNs" } as Context,
           plugin: { name: "my.plugin", version: "0.0.1" } as Plugin,
-        } as InstalledPackageReference,
+        }),
         status: {
           ready: true,
-          reason: InstalledPackageStatus_StatusReason.STATUS_REASON_INSTALLED,
+          reason: InstalledPackageStatus_StatusReason.INSTALLED,
           userReason: "deployed",
         } as InstalledPackageStatus,
         latestMatchingVersion: { appVersion: "0.1.0", pkgVersion: "1.0.0" } as PackageAppVersion,
@@ -273,15 +292,14 @@ context("when apps available", () => {
       } as InstalledPackageSummary,
       {
         name: "bar",
-        installedPackageRef: {
+        installedPackageRef: new InstalledPackageReference({
           identifier: "foobar/bar",
-          pkgVersion: "1.0.0",
           context: { cluster: "", namespace: "fooNs" } as Context,
           plugin: { name: "my.plugin", version: "0.0.1" } as Plugin,
-        } as InstalledPackageReference,
+        }),
         status: {
           ready: true,
-          reason: InstalledPackageStatus_StatusReason.STATUS_REASON_INSTALLED,
+          reason: InstalledPackageStatus_StatusReason.INSTALLED,
           userReason: "deployed",
         } as InstalledPackageStatus,
         latestMatchingVersion: { appVersion: "0.1.0", pkgVersion: "1.0.0" } as PackageAppVersion,
@@ -298,6 +316,7 @@ context("when apps available", () => {
       <MemoryRouter initialEntries={["/foo?q=bar"]}>
         <AppList />
       </MemoryRouter>,
+      false,
     );
     expect(wrapper.find(AppListItem).key()).toBe("fooNs-foobar/bar");
   });
@@ -306,15 +325,14 @@ context("when apps available", () => {
     state.apps.listOverview = [
       {
         name: "foo",
-        installedPackageRef: {
+        installedPackageRef: new InstalledPackageReference({
           identifier: "foo/bar",
-          pkgVersion: "1.0.0",
           context: { cluster: "", namespace: "fooNs" } as Context,
           plugin: { name: "my.plugin", version: "0.0.1" } as Plugin,
-        } as InstalledPackageReference,
+        }),
         status: {
           ready: true,
-          reason: InstalledPackageStatus_StatusReason.STATUS_REASON_INSTALLED,
+          reason: InstalledPackageStatus_StatusReason.INSTALLED,
           userReason: "deployed",
         } as InstalledPackageStatus,
         latestMatchingVersion: { appVersion: "0.1.0", pkgVersion: "1.0.0" } as PackageAppVersion,
@@ -324,15 +342,14 @@ context("when apps available", () => {
       } as InstalledPackageSummary,
       {
         name: "bar",
-        installedPackageRef: {
+        installedPackageRef: new InstalledPackageReference({
           identifier: "foobar/bar",
-          pkgVersion: "1.0.0",
           context: { cluster: "", namespace: "fooNs" } as Context,
           plugin: { name: "my.plugin", version: "0.0.1" } as Plugin,
-        } as InstalledPackageReference,
+        }),
         status: {
           ready: true,
-          reason: InstalledPackageStatus_StatusReason.STATUS_REASON_INSTALLED,
+          reason: InstalledPackageStatus_StatusReason.INSTALLED,
           userReason: "deployed",
         } as InstalledPackageStatus,
         latestMatchingVersion: { appVersion: "0.1.0", pkgVersion: "1.0.0" } as PackageAppVersion,
@@ -342,15 +359,14 @@ context("when apps available", () => {
       } as InstalledPackageSummary,
       {
         name: "bar",
-        installedPackageRef: {
+        installedPackageRef: new InstalledPackageReference({
           identifier: "foobar/bar",
-          pkgVersion: "1.0.0",
           context: { cluster: "", namespace: "barNs" } as Context,
           plugin: { name: "my.plugin", version: "0.0.1" } as Plugin,
-        } as InstalledPackageReference,
+        }),
         status: {
           ready: true,
-          reason: InstalledPackageStatus_StatusReason.STATUS_REASON_INSTALLED,
+          reason: InstalledPackageStatus_StatusReason.INSTALLED,
           userReason: "deployed",
         } as InstalledPackageStatus,
         latestMatchingVersion: { appVersion: "0.1.0", pkgVersion: "1.0.0" } as PackageAppVersion,
@@ -367,6 +383,7 @@ context("when apps available", () => {
       <MemoryRouter initialEntries={["/foo?q=bar"]}>
         <AppList />
       </MemoryRouter>,
+      false,
     );
     expect(wrapper.find(AppListItem).first().key()).toBe("fooNs-foobar/bar");
     expect(wrapper.find(AppListItem).last().key()).toBe("barNs-foobar/bar");
@@ -419,6 +436,7 @@ context("when custom resources available", () => {
       <MemoryRouter initialEntries={["/foo?q=nop"]}>
         <AppList />
       </MemoryRouter>,
+      false,
     );
     const itemList = wrapper.find(CustomResourceListItem);
     expect(itemList).not.toExist();

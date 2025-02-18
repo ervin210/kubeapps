@@ -1,22 +1,28 @@
-import { grpc } from "@improbable-eng/grpc-web";
+// Copyright 2019-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import { Code } from "@connectrpc/connect";
 import { AxiosResponse } from "axios";
-import { CheckNamespaceExistsRequest } from "gen/kubeappsapis/plugins/resources/v1alpha1/resources";
-import * as jwt from "jsonwebtoken";
+import { CheckNamespaceExistsResponse } from "gen/kubeappsapis/plugins/resources/v1alpha1/resources_pb";
+import jwt from "jsonwebtoken";
 import { Auth } from "./Auth";
 import { SupportedThemes } from "./Config";
 import { KubeappsGrpcClient } from "./KubeappsGrpcClient";
+import { initialState } from "./specs/mountWrapper";
 
 describe("Auth", () => {
   // Create a real client, but we'll stub out the function we're interested in.
   const client = new KubeappsGrpcClient().getResourcesServiceClientImpl();
-  let mockClientCheckNamespaceExists: jest.MockedFunction<typeof client.CheckNamespaceExists>;
+  let mockClientCheckNamespaceExists: jest.MockedFunction<typeof client.checkNamespaceExists>;
 
   beforeEach(() => {
     mockClientCheckNamespaceExists = jest
       .fn()
-      .mockImplementation(() => Promise.resolve({ exists: true } as CheckNamespaceExistsRequest));
-    jest.spyOn(client, "CheckNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
-    jest.spyOn(Auth, "resourcesClient").mockImplementation(() => client);
+      .mockImplementation(() =>
+        Promise.resolve(new CheckNamespaceExistsResponse({ exists: true })),
+      );
+    jest.spyOn(client, "checkNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
+    jest.spyOn(Auth, "resourcesServiceClient").mockImplementation(() => client);
   });
   afterEach(() => {
     jest.resetAllMocks();
@@ -25,7 +31,7 @@ describe("Auth", () => {
   it("should return without error when the endpoint succeeds with the given token", async () => {
     await Auth.validateToken("othercluster", "foo");
 
-    expect(Auth.resourcesClient).toHaveBeenCalledWith("foo");
+    expect(Auth.resourcesServiceClient).toHaveBeenCalledWith("foo");
     expect(mockClientCheckNamespaceExists).toHaveBeenCalledWith({
       context: {
         cluster: "othercluster",
@@ -37,11 +43,11 @@ describe("Auth", () => {
   it("should return without error when the endpoint returns PermissionDenied with the given token", async () => {
     mockClientCheckNamespaceExists = jest
       .fn()
-      .mockImplementation(() => Promise.reject({ code: grpc.Code.PermissionDenied }));
-    jest.spyOn(client, "CheckNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
+      .mockImplementation(() => Promise.reject({ code: Code.PermissionDenied }));
+    jest.spyOn(client, "checkNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
     await Auth.validateToken("othercluster", "foo");
 
-    expect(Auth.resourcesClient).toHaveBeenCalledWith("foo");
+    expect(Auth.resourcesServiceClient).toHaveBeenCalledWith("foo");
     expect(mockClientCheckNamespaceExists).toHaveBeenCalledWith({
       context: {
         cluster: "othercluster",
@@ -55,17 +61,17 @@ describe("Auth", () => {
       {
         name: "should throw an invalid token error for 401 responses",
         response: { status: 401, data: "ignored anyway" },
-        grpcCode: grpc.Code.Unauthenticated,
+        grpcCode: Code.Unauthenticated,
         expectedError: new Error("invalid token"),
       },
       {
         name: "should throw a standard error for a 404 response",
-        grpcCode: grpc.Code.NotFound,
+        grpcCode: Code.NotFound,
         expectedError: new Error("not found"),
       },
       {
         name: "should throw a standard error for a 500 response",
-        grpcCode: grpc.Code.Internal,
+        grpcCode: Code.Internal,
         expectedError: new Error("internal error"),
       },
     ].forEach(testCase => {
@@ -74,7 +80,7 @@ describe("Auth", () => {
           .fn()
           .mockImplementation(() => Promise.reject({ code: testCase.grpcCode }));
         jest
-          .spyOn(client, "CheckNamespaceExists")
+          .spyOn(client, "checkNamespaceExists")
           .mockImplementation(mockClientCheckNamespaceExists);
 
         await expect(Auth.validateToken("default", "foo")).rejects.toThrow(testCase.expectedError);
@@ -86,7 +92,7 @@ describe("Auth", () => {
     it("returns true if request to API root succeeds", async () => {
       const isAuthed = await Auth.isAuthenticatedWithCookie("somecluster");
 
-      expect(Auth.resourcesClient).toHaveBeenCalledWith();
+      expect(Auth.resourcesServiceClient).toHaveBeenCalledWith();
       expect(mockClientCheckNamespaceExists).toHaveBeenCalledWith({
         context: {
           cluster: "somecluster",
@@ -99,15 +105,13 @@ describe("Auth", () => {
     it("returns false if the request results in a non-grpc-web response", async () => {
       mockClientCheckNamespaceExists = jest.fn().mockImplementation(() =>
         Promise.reject({
-          code: grpc.Code.PermissionDenied,
-          metadata: {
-            headersMap: {
-              "content-type": ["not-grpc-content-type"],
-            },
-          },
+          code: Code.PermissionDenied,
+          metadata: new Headers({
+            "content-type": "not-grpc-content-type",
+          }),
         }),
       );
-      jest.spyOn(client, "CheckNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
+      jest.spyOn(client, "checkNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
 
       const isAuthed = await Auth.isAuthenticatedWithCookie("somecluster");
 
@@ -117,15 +121,13 @@ describe("Auth", () => {
     it("returns true if the request to api root results in a 403", async () => {
       mockClientCheckNamespaceExists = jest.fn().mockImplementation(() =>
         Promise.reject({
-          code: grpc.Code.PermissionDenied,
-          metadata: {
-            headersMap: {
-              "content-type": ["application/grpc-web+proto"],
-            },
-          },
+          code: Code.PermissionDenied,
+          metadata: new Headers({
+            "content-type": "application/grpc-web+proto",
+          }),
         }),
       );
-      jest.spyOn(client, "CheckNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
+      jest.spyOn(client, "checkNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
 
       const isAuthed = await Auth.isAuthenticatedWithCookie("somecluster");
 
@@ -135,15 +137,13 @@ describe("Auth", () => {
     it("returns true if the request to api root results in a 403 with another grpc protocol", async () => {
       mockClientCheckNamespaceExists = jest.fn().mockImplementation(() =>
         Promise.reject({
-          code: grpc.Code.PermissionDenied,
-          metadata: {
-            headersMap: {
-              "content-type": ["application/grpc-web+thrift"],
-            },
-          },
+          code: Code.PermissionDenied,
+          metadata: new Headers({
+            "content-type": "application/grpc-web+thrift",
+          }),
         }),
       );
-      jest.spyOn(client, "CheckNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
+      jest.spyOn(client, "checkNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
 
       const isAuthed = await Auth.isAuthenticatedWithCookie("somecluster");
 
@@ -152,15 +152,13 @@ describe("Auth", () => {
     it("returns false if the request results in a 401", async () => {
       mockClientCheckNamespaceExists = jest.fn().mockImplementation(() =>
         Promise.reject({
-          code: grpc.Code.Unauthenticated,
-          metadata: {
-            headersMap: {
-              "content-type": ["not-grpc-content-type"],
-            },
-          },
+          code: Code.Unauthenticated,
+          metadata: new Headers({
+            "content-type": "not-grpc-content-type",
+          }),
         }),
       );
-      jest.spyOn(client, "CheckNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
+      jest.spyOn(client, "checkNamespaceExists").mockImplementation(mockClientCheckNamespaceExists);
 
       const isAuthed = await Auth.isAuthenticatedWithCookie("somecluster");
 
@@ -229,15 +227,18 @@ describe("Auth", () => {
         oauthLogoutURI,
         kubeappsCluster: "default",
         kubeappsNamespace: "ns",
-        globalReposNamespace: "ns-global",
+        helmGlobalNamespace: "ns-global",
+        carvelGlobalNamespace: "kapp-controller-packaging-global",
         appVersion: "2",
         clusters: [],
-        featureFlags: { operators: false },
+        featureFlags: { ...initialState.config.featureFlags },
         authProxySkipLoginPage: false,
         theme: SupportedThemes.light,
         remoteComponentsUrl: "",
         customAppViews: [],
         skipAvailablePackageDetails: false,
+        createNamespaceLabels: {},
+        configuredPlugins: [],
       });
 
       expect(mockedAssign).toBeCalledWith(oauthLogoutURI);
@@ -251,15 +252,18 @@ describe("Auth", () => {
         oauthLogoutURI: "",
         kubeappsCluster: "default",
         kubeappsNamespace: "ns",
-        globalReposNamespace: "ns-global",
+        helmGlobalNamespace: "ns-global",
+        carvelGlobalNamespace: "kapp-controller-packaging-global",
         appVersion: "2",
         clusters: [],
-        featureFlags: { operators: false },
+        featureFlags: { ...initialState.config.featureFlags },
         authProxySkipLoginPage: false,
         theme: SupportedThemes.light,
         remoteComponentsUrl: "",
         customAppViews: [],
         skipAvailablePackageDetails: false,
+        createNamespaceLabels: {},
+        configuredPlugins: [],
       });
 
       expect(mockedAssign).toBeCalledWith("/oauth2/sign_out");
@@ -272,7 +276,7 @@ describe("is403FromAuthProxy", () => {
     expect(
       Auth.is403FromAuthProxy({
         status: 403,
-        data: 'namespaces is forbidden: User "system:serviceaccount:kubeapps:kubeapps-internal-kubeops" cannot list resource "namespaces" in API group "" at the cluster scope',
+        data: 'namespaces is forbidden: User "system:serviceaccount:kubeapps:kubeapps-internal-kubeappsapis" cannot list resource "namespaces" in API group "" at the cluster scope',
       } as AxiosResponse<any>),
     ).toBe(false);
   });
@@ -302,7 +306,7 @@ describe("isAnonymous", () => {
     expect(
       Auth.isAnonymous({
         status: 403,
-        data: 'namespaces is forbidden: User "system:serviceaccount:kubeapps:kubeapps-internal-kubeops" cannot list resource "namespaces" in API group "" at the cluster scope',
+        data: 'namespaces is forbidden: User "system:serviceaccount:kubeapps:kubeapps-internal-kubeappsapis" cannot list resource "namespaces" in API group "" at the cluster scope',
       } as AxiosResponse<any>),
     ).toBe(false);
   });
@@ -312,7 +316,7 @@ describe("isAnonymous", () => {
         status: 403,
         data: {
           message:
-            'namespaces is forbidden: User "system:serviceaccount:kubeapps:kubeapps-internal-kubeops" cannot list resource "namespaces" in API group "" at the cluster scope',
+            'namespaces is forbidden: User "system:serviceaccount:kubeapps:kubeapps-internal-kubeappsapis" cannot list resource "namespaces" in API group "" at the cluster scope',
         },
       } as AxiosResponse<any>),
     ).toBe(false);

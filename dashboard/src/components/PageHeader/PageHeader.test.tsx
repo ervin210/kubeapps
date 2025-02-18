@@ -1,5 +1,8 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { mount } from "enzyme";
-import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins";
+import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins_pb";
 import PageHeader from "./PageHeader";
 
 const defaultProps = {
@@ -19,6 +22,11 @@ it("should render a smaller title", () => {
 it("includes an icon", () => {
   const wrapper = mount(<PageHeader {...defaultProps} icon="icon.png" />);
   expect(wrapper.find("img").prop("src")).toBe("icon.png");
+});
+
+it("includes subtitle", () => {
+  const wrapper = mount(<PageHeader {...defaultProps} subtitle={<span id="test">test</span>} />);
+  expect(wrapper.find("span").prop("id")).toBe("test");
 });
 
 it("includes a filter component", () => {

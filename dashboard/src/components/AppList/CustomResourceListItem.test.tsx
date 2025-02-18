@@ -1,3 +1,6 @@
+// Copyright 2020-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { shallow } from "enzyme";
 import { app } from "shared/url";
 import InfoCard from "../InfoCard/InfoCard";
@@ -40,7 +43,7 @@ it("renders an cr item", () => {
   const card = wrapper.find(InfoCard);
   expect(card.props()).toMatchObject({
     description: crd.description,
-    icon: "placeholder.png",
+    icon: "placeholder.svg",
     link: app.operatorInstances.view(
       defaultProps.cluster,
       resource.metadata.namespace,

@@ -1,20 +1,11 @@
-/*
-Copyright © 2022 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package resourcerefstest
 
 import (
-	corev1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	"google.golang.org/grpc/codes"
+	"github.com/bufbuild/connect-go"
+	corev1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
 )
 
 // this is done so that test scenarios can be re-used in another package (helm and flux plug-ins)
@@ -26,10 +17,10 @@ type TestReleaseStub struct {
 }
 
 type TestCase struct {
-	Name                  string
-	ExistingReleases      []TestReleaseStub
-	ExpectedResourceRefs  []*corev1.ResourceRef
-	ExpectedErrStatusCode codes.Code
+	Name                 string
+	ExistingReleases     []TestReleaseStub
+	ExpectedResourceRefs []*corev1.ResourceRef
+	ExpectedErrCode      connect.Code
 }
 
 var (
@@ -195,11 +186,11 @@ should not be :! parsed as yaml$
 `,
 				},
 			},
-			ExpectedErrStatusCode: codes.Internal,
+			ExpectedErrCode: connect.CodeInternal,
 		},
 		{
 			Name: "handles duplicate labels as helm does",
-			// See https://github.com/kubeapps/kubeapps/issues/632
+			// See https://github.com/vmware-tanzu/kubeapps/issues/632
 			ExistingReleases: []TestReleaseStub{
 				{
 					Name:      "my-apache",
@@ -375,7 +366,7 @@ items:
 	// Using the redis_existing_stub_completed data with
 	// different manifests for each test.
 	releaseNamespace := "test"
-	releaseName := "test-my-redis"
+	releaseName := "my-redis"
 
 	TestCases2 = []TestCase{
 		{
@@ -507,8 +498,8 @@ metadata:
 			},
 		},
 		{
-			Name:                  "returns a not found error if the helm release is not found (2)",
-			ExpectedErrStatusCode: codes.NotFound,
+			Name:            "returns a not found error if the helm release is not found (2)",
+			ExpectedErrCode: connect.CodeNotFound,
 		},
 		{
 			Name: "returns internal error if the yaml manifest cannot be parsed (2)",
@@ -523,11 +514,11 @@ should not be :! parsed as yaml$
 `,
 				},
 			},
-			ExpectedErrStatusCode: codes.Internal,
+			ExpectedErrCode: connect.CodeInternal,
 		},
 		{
 			Name: "handles duplicate labels in the manifest as helm does (2)",
-			// See https://github.com/kubeapps/kubeapps/issues/632
+			// See https://github.com/vmware-tanzu/kubeapps/issues/632
 			ExistingReleases: []TestReleaseStub{
 				{
 					Name:      releaseName,
@@ -693,6 +684,44 @@ items:
 					Name:       "clusterrole-2",
 					Namespace:  "test",
 					Kind:       "ClusterRole",
+				},
+			},
+		},
+		{
+			Name: "returns resource refs for helm installation in non default ns (flux HelmRelease targetNamespace is set)",
+			ExistingReleases: []TestReleaseStub{
+				{
+					Name:      "test2-my-redis",
+					Namespace: "test2",
+					Manifest: `
+# Source: redis/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-test
+  namespace: test2
+---
+# Source: redis/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-test
+  namespace: test2
+`,
+				},
+			},
+			ExpectedResourceRefs: []*corev1.ResourceRef{
+				{
+					ApiVersion: "v1",
+					Name:       "redis-test",
+					Namespace:  "test2",
+					Kind:       "Service",
+				},
+				{
+					ApiVersion: "apps/v1",
+					Name:       "redis-test",
+					Namespace:  "test2",
+					Kind:       "Deployment",
 				},
 			},
 		},

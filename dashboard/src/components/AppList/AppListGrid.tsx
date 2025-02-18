@@ -1,10 +1,13 @@
-import Row from "components/js/Row";
-import { InstalledPackageSummary } from "gen/kubeappsapis/core/packages/v1alpha1/packages";
+// Copyright 2020-2024 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+import AlertGroup from "components/AlertGroup";
+import Row from "components/Row";
+import { InstalledPackageSummary } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 import { Link } from "react-router-dom";
-import { IClusterServiceVersion, IResource } from "../../shared/types";
-import * as url from "../../shared/url";
-import { escapeRegExp } from "../../shared/utils";
-import Alert from "../js/Alert";
+import { IClusterServiceVersion, IResource } from "shared/types";
+import * as url from "shared/url";
+import { escapeRegExp } from "shared/utils";
 import "./AppList.css";
 import AppListItem from "./AppListItem";
 import CustomResourceListItem from "./CustomResourceListItem";
@@ -31,13 +34,15 @@ function AppListGrid(props: IAppListProps) {
   if (filteredReleases.length === 0 && filteredCRs.length === 0) {
     return (
       <div className="applist-empty">
-        <Alert>Deploy applications on your Kubernetes cluster with a single click.</Alert>
+        <AlertGroup status="info">
+          Deploy applications on your Kubernetes cluster with a single click.
+        </AlertGroup>
         <h2>Welcome To Kubeapps</h2>
         <p>
           Start browsing your <Link to={url.app.catalog(cluster, namespace)}>favourite apps</Link>{" "}
           or check the{" "}
           <a
-            href={`https://github.com/kubeapps/kubeapps/blob/${appVersion}/docs/user/getting-started.md`}
+            href={`https://github.com/vmware-tanzu/kubeapps/blob/${appVersion}/site/content/docs/latest/tutorials/getting-started.md`}
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -60,7 +65,9 @@ function AppListGrid(props: IAppListProps) {
             />
           );
         })}
+
         {filteredCRs.map(r => {
+          /* eslint-disable prettier/prettier */
           const csv = props.csvs.find(c =>
             c.spec.customresourcedefinitions.owned?.some(crd => crd.kind === r.kind),
           );

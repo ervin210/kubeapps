@@ -1,33 +1,22 @@
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import {
   AvailablePackageReference,
   GetAvailablePackageDetailResponse,
   GetAvailablePackageSummariesResponse,
   GetAvailablePackageVersionsResponse,
   PackageAppVersion,
-} from "gen/kubeappsapis/core/packages/v1alpha1/packages";
-import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins";
-import * as moxios from "moxios";
-import { axiosWithAuth } from "./AxiosInstance";
+} from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
+import { Plugin } from "gen/kubeappsapis/core/plugins/v1alpha1/plugins_pb";
 import { KubeappsGrpcClient } from "./KubeappsGrpcClient";
 import PackagesService from "./PackagesService";
 
 const cluster = "cluster-name";
 const namespace = "namespace-name";
-const defaultPage = 1;
+const defaultPageToken = "defaultPageToken";
 const defaultSize = 0;
 describe("App", () => {
-  beforeEach(() => {
-    // Import as "any" to avoid typescript syntax error
-    moxios.install(axiosWithAuth as any);
-    moxios.stubRequest(/.*/, {
-      response: { data: "ok" },
-      status: 200,
-    });
-  });
-  afterEach(() => {
-    moxios.uninstall(axiosWithAuth as any);
-    jest.restoreAllMocks();
-  });
   describe("getAvailablePackageSummaries", () => {
     [
       {
@@ -36,7 +25,7 @@ describe("App", () => {
           cluster: cluster,
           namespace: namespace,
           repos: "",
-          page: defaultPage,
+          nextPageToken: defaultPageToken,
           size: defaultSize,
           query: "",
         },
@@ -46,7 +35,7 @@ describe("App", () => {
             query: "",
             repositories: [],
           },
-          paginationOptions: { pageToken: defaultPage.toString(), pageSize: defaultSize },
+          paginationOptions: { pageToken: defaultPageToken, pageSize: defaultSize },
         },
       },
       {
@@ -55,7 +44,7 @@ describe("App", () => {
           cluster: cluster,
           namespace: namespace,
           repos: "",
-          page: defaultPage,
+          nextPageToken: defaultPageToken,
           size: defaultSize,
           query: "cms",
         },
@@ -65,7 +54,7 @@ describe("App", () => {
             query: "cms",
             repositories: [],
           },
-          paginationOptions: { pageToken: defaultPage.toString(), pageSize: defaultSize },
+          paginationOptions: { pageToken: defaultPageToken, pageSize: defaultSize },
         },
       },
       {
@@ -74,7 +63,7 @@ describe("App", () => {
           cluster: cluster,
           namespace: namespace,
           repos: "repo1,repo2",
-          page: defaultPage,
+          nextPageToken: defaultPageToken,
           size: defaultSize,
           query: "",
         },
@@ -84,7 +73,7 @@ describe("App", () => {
             query: "",
             repositories: ["repo1", "repo2"],
           },
-          paginationOptions: { pageToken: defaultPage.toString(), pageSize: defaultSize },
+          paginationOptions: { pageToken: defaultPageToken, pageSize: defaultSize },
         },
       },
       {
@@ -93,7 +82,7 @@ describe("App", () => {
           cluster: cluster,
           namespace: namespace,
           repos: "repo1,repo2",
-          page: defaultPage,
+          nextPageToken: defaultPageToken,
           size: defaultSize,
           query: "cms",
         },
@@ -103,7 +92,7 @@ describe("App", () => {
             query: "cms",
             repositories: ["repo1", "repo2"],
           },
-          paginationOptions: { pageToken: defaultPage.toString(), pageSize: defaultSize },
+          paginationOptions: { pageToken: defaultPageToken, pageSize: defaultSize },
         },
       },
     ].forEach(t => {
@@ -118,14 +107,14 @@ describe("App", () => {
         // Create a real client, but we'll stub out the function we're interested in.
         const mockClient = new KubeappsGrpcClient().getPackagesServiceClientImpl();
         jest
-          .spyOn(mockClient, "GetAvailablePackageSummaries")
+          .spyOn(mockClient, "getAvailablePackageSummaries")
           .mockImplementation(mockClientGetAvailablePackageSummaries);
-        jest.spyOn(PackagesService, "client").mockImplementation(() => mockClient);
+        jest.spyOn(PackagesService, "packagesServiceClient").mockImplementation(() => mockClient);
         const availablePackageSummaries = await PackagesService.getAvailablePackageSummaries(
           t.args.cluster,
           t.args.namespace,
           t.args.repos,
-          t.args.page,
+          t.args.nextPageToken,
           t.args.size,
           t.args.query,
         );

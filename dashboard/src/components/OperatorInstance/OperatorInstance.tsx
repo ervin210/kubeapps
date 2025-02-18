@@ -1,39 +1,35 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsButton } from "@cds/react/button";
 import { CdsIcon } from "@cds/react/icon";
 import actions from "actions";
+import AlertGroup from "components/AlertGroup";
 import AppNotes from "components/AppView/AppNotes/AppNotes";
 import AppSecrets from "components/AppView/AppSecrets";
 import { IAppViewResourceRefs } from "components/AppView/AppView";
-import Alert from "components/js/Alert";
-import Column from "components/js/Column";
-import Row from "components/js/Row";
+import Column from "components/Column";
+import LoadingWrapper from "components/LoadingWrapper";
 import { parseCSV } from "components/OperatorInstanceForm/OperatorInstanceForm";
 import OperatorSummary from "components/OperatorSummary/OperatorSummary";
 import OperatorHeader from "components/OperatorView/OperatorHeader";
-import { push } from "connected-react-router";
-import * as yaml from "js-yaml";
+import Row from "components/Row";
+import { usePush } from "hooks/push";
+import placeholder from "icons/placeholder.svg";
 import { useEffect, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
+import { useParams } from "react-router-dom";
 import { Action } from "redux";
 import { ThunkDispatch } from "redux-thunk";
 import { fromCRD } from "shared/ResourceRef";
 import { IClusterServiceVersionCRD, IKind, IResource, IStoreState } from "shared/types";
 import { app } from "shared/url";
-import ApplicationStatus from "../../containers/ApplicationStatusContainer";
-import placeholder from "../../placeholder.png";
+import { parseToString } from "shared/yamlUtils";
 import AccessURLTable from "../AppView/AccessURLTable/AccessURLTable";
 import AppValues from "../AppView/AppValues/AppValues";
 import ResourceTabs from "../AppView/ResourceTabs";
+import ApplicationStatus from "../ApplicationStatus/ApplicationStatus";
 import ConfirmDialog from "../ConfirmDialog/ConfirmDialog";
-import LoadingWrapper from "../LoadingWrapper/LoadingWrapper";
-
-export interface IOperatorInstanceProps {
-  cluster: string;
-  namespace: string;
-  csvName: string;
-  crdName: string;
-  instanceName: string;
-}
 
 function parseResource(
   kind: IKind,
@@ -55,6 +51,9 @@ function parseResource(
   if (crd.resources) {
     crd.resources?.forEach(r => {
       switch (r.kind) {
+        // TODO(minelson): Audit code to see if we can switch to use the normal ResourceRef
+        // here instead, then remove the shared/ResourceRef with the extra fields.
+        // https://github.com/vmware-tanzu/kubeapps/issues/6062
         case "Deployment":
           result.deployments.push(fromCRD(r, kind, cluster, namespace, ownerRef));
           break;
@@ -97,13 +96,7 @@ function parseResource(
   return result;
 }
 
-function OperatorInstance({
-  cluster,
-  namespace,
-  csvName,
-  crdName,
-  instanceName,
-}: IOperatorInstanceProps) {
+function OperatorInstance() {
   const dispatch: ThunkDispatch<IStoreState, null, Action> = useDispatch();
   const [crd, setCRD] = useState(undefined as IClusterServiceVersionCRD | undefined);
   const [icon, setIcon] = useState(placeholder);
@@ -130,17 +123,34 @@ function OperatorInstance({
       resource,
       errors: { resource: errors },
     },
+    clusters: { currentCluster: cluster, clusters },
     kube: { kinds },
   } = useSelector((state: IStoreState) => state);
+  const namespace = clusters[cluster].currentNamespace;
+
+  type IOperatorInstanceParams = {
+    csv: string;
+    crd: string;
+    instanceName: string;
+  };
+  const { csv: csvName, crd: crdName, instanceName } = useParams<IOperatorInstanceParams>();
 
   useEffect(() => {
-    dispatch(actions.operators.getResource(cluster, namespace, csvName, crdName, instanceName));
-    dispatch(actions.operators.getCSV(cluster, namespace, csvName));
+    dispatch(
+      actions.operators.getResource(
+        cluster,
+        namespace,
+        csvName || "",
+        crdName || "",
+        instanceName || "",
+      ),
+    );
+    dispatch(actions.operators.getCSV(cluster, namespace, csvName || ""));
   }, [dispatch, cluster, namespace, csvName, crdName, instanceName]);
 
   useEffect(() => {
     if (csv) {
-      parseCSV(csv, crdName, setIcon, setCRD);
+      parseCSV(csv, crdName || "", setIcon, setCRD);
     }
   }, [csv, crdName]);
 
@@ -153,9 +163,16 @@ function OperatorInstance({
     }
   }, [crd, resource, cluster, kinds, namespace]);
 
+  const push = usePush();
   const onUpdateClick = () =>
-    dispatch(
-      push(app.operatorInstances.update(cluster, namespace, csvName, crdName, instanceName)),
+    push(
+      app.operatorInstances.update(
+        cluster,
+        namespace,
+        csvName || "",
+        crdName || "",
+        instanceName || "",
+      ),
     );
   const handleDeleteClick = async () => {
     setDeleting(true);
@@ -165,15 +182,15 @@ function OperatorInstance({
     setDeleting(false);
     closeModal();
     if (deleted) {
-      dispatch(push(app.apps.list(cluster, namespace)));
+      push(app.apps.list(cluster, namespace));
     }
   };
 
   if (errors.fetch) {
     return (
-      <Alert theme="danger">
-        An error occurred while fetching the instance: {errors.fetch.message}
-      </Alert>
+      <AlertGroup status="danger">
+        An error occurred while fetching the instance: {errors.fetch.message}.
+      </AlertGroup>
     );
   }
   const error = errors.delete || errors.update;
@@ -206,7 +223,7 @@ function OperatorInstance({
           loadingText={`Fetching ${instanceName}...`}
           loaded={!isFetching}
         >
-          {error && <Alert theme="danger">An error occurred: {error.message}</Alert>}
+          {error && <AlertGroup status="danger">An error occurred: {error.message}.</AlertGroup>}
           {resource && (
             <Row>
               <Column span={3}>
@@ -226,7 +243,7 @@ function OperatorInstance({
                 </div>
                 {resource.status && (
                   <div className="appview-separator">
-                    <AppNotes title="Resource Status" notes={yaml.dump(resource.status)} />
+                    <AppNotes title="Resource Status" notes={parseToString(resource.status)} />
                   </div>
                 )}
                 <div className="appview-separator">
@@ -243,7 +260,7 @@ function OperatorInstance({
                 </div>
                 {resource.spec && (
                   <div className="appview-separator">
-                    <AppValues values={yaml.dump(resource.spec)} />
+                    <AppValues values={parseToString(resource.spec)} />
                   </div>
                 )}
               </Column>

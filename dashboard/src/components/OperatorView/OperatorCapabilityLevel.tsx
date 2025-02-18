@@ -1,3 +1,6 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsIcon } from "@cds/react/icon";
 
 interface IOperatorCapabilitiesProps {
@@ -10,7 +13,7 @@ export const FULL_LIFECYCLE = "Full Lifecycle";
 export const DEEP_INSIGHTS = "Deep Insights";
 export const AUTO_PILOT = "Auto Pilot";
 
-const levels = {
+const levels: { [index: string]: number } = {
   [BASIC_INSTALL]: 1,
   [SEAMLESS_UPGRADES]: 2,
   [FULL_LIFECYCLE]: 3,

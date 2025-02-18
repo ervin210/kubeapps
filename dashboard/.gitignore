@@ -1,3 +1,6 @@
+# Copyright 2018-2022 the Kubeapps contributors.
+# SPDX-License-Identifier: Apache-2.0
+
 # See https://help.github.com/ignore-files/ for more about ignoring files.
 
 src/**/*.css
@@ -28,3 +31,6 @@ telepresence.log
 
 # Use yarn for package management
 package-lock.json
+
+# React-app proxy
+src/setupProxy.js

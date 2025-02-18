@@ -1,5 +1,8 @@
+// Copyright 2020-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { useEffect, useState } from "react";
-import placeholder from "../../placeholder.png";
+import placeholder from "icons/placeholder.svg";
 
 export interface IIconProps {
   icon?: any;

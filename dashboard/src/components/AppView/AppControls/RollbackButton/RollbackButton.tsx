@@ -1,9 +1,12 @@
+// Copyright 2019-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsIcon } from "@cds/react/icon";
 import actions from "actions";
 import {
   InstalledPackageReference,
   InstalledPackageStatus,
-} from "gen/kubeappsapis/core/packages/v1alpha1/packages";
+} from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 import { useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Action } from "redux";
@@ -33,7 +36,9 @@ function RollbackButton({
   const closeModal = () => setModalOpen(false);
   const handleRollback = async (r: number) => {
     setLoading(true);
-    const success = await dispatch(actions.apps.rollbackInstalledPackage(installedPackageRef, r));
+    const success = await dispatch(
+      actions.installedpackages.rollbackInstalledPackage(installedPackageRef, r),
+    );
     setLoading(false);
     if (success) {
       closeModal();

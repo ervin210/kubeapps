@@ -1,30 +1,24 @@
-/*
-Copyright © 2022 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2022-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package resourcerefs
 
 import (
-	"context"
 	goerrs "errors"
+	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
-	corev1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/plugins/pkg/clientgetter"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/bufbuild/connect-go"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/pkg/helm"
+
+	corev1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/storage/driver"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/yaml"
+	log "k8s.io/klog/v2"
 )
 
 type yamlMetadata struct {
@@ -50,7 +44,7 @@ func ResourceRefsFromManifest(m, pkgNamespace string) ([]*corev1.ResourceRef, er
 			if goerrs.Is(err, io.EOF) {
 				break
 			}
-			return nil, status.Errorf(codes.Internal, "Unable to decode yaml manifest: %v", err)
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("Unable to decode yaml manifest: %w", err))
 		}
 		if doc.Kind == "" {
 			continue
@@ -96,16 +90,15 @@ func ResourceRefsFromManifest(m, pkgNamespace string) ([]*corev1.ResourceRef, er
 }
 
 func GetInstalledPackageResourceRefs(
-	ctx context.Context,
-	request *corev1.GetInstalledPackageResourceRefsRequest,
-	actionConfigGetter clientgetter.HelmActionConfigGetterFunc) (*corev1.GetInstalledPackageResourceRefsResponse, error) {
-	pkgRef := request.GetInstalledPackageRef()
-	identifier := pkgRef.GetIdentifier()
-	namespace := pkgRef.GetContext().GetNamespace()
+	headers http.Header,
+	helmReleaseName types.NamespacedName,
+	actionConfigGetter helm.HelmActionConfigGetterFunc) ([]*corev1.ResourceRef, error) {
+	log.InfoS("+resourcerefs GetInstalledPackageResourceRefs", "helmReleaseName", helmReleaseName)
+	namespace := helmReleaseName.Namespace
 
-	actionConfig, err := actionConfigGetter(ctx, namespace)
+	actionConfig, err := actionConfigGetter(headers, namespace)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "Unable to create Helm action config: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("Unable to create Helm action config: %w", err))
 	}
 
 	// Grab the released manifest from the release.
@@ -114,23 +107,21 @@ func GetInstalledPackageResourceRefs(
 	// certain assumptions about the RBAC of the Kubeapps user, we may be able
 	// to instead query for labelled resources. See the discussion following for
 	// more details:
-	// https://github.com/kubeapps/kubeapps/pull/3811#issuecomment-977689570
+	// https://github.com/vmware-tanzu/kubeapps/pull/3811#issuecomment-977689570
 	getcmd := action.NewGet(actionConfig)
-	release, err := getcmd.Run(identifier)
+	release, err := getcmd.Run(helmReleaseName.Name)
 	if err != nil {
 		if err == driver.ErrReleaseNotFound {
-			return nil, status.Errorf(codes.NotFound, "Unable to find Helm release %q in namespace %q: %+v", identifier, namespace, err)
+			log.ErrorS(err, "resourcerefs GetInstalledPackageResourceRefs")
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("Unable to find Helm release %q in namespace %q: %w", helmReleaseName, namespace, err))
 		}
-		return nil, status.Errorf(codes.Internal, "Unable to run Helm get action: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("Unable to run Helm get action: %w", err))
 	}
 
 	refs, err := ResourceRefsFromManifest(release.Manifest, namespace)
 	if err != nil {
 		return nil, err
+	} else {
+		return refs, nil
 	}
-
-	return &corev1.GetInstalledPackageResourceRefsResponse{
-		Context:      pkgRef.GetContext(),
-		ResourceRefs: refs,
-	}, nil
 }

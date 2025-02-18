@@ -1,7 +1,13 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 use std::convert::TryFrom;
 use std::env;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
+use crate::cache::PruningCache;
 use anyhow::{Context, Result};
+use chrono::Utc;
 use http::Uri;
 use k8s_openapi::api::core::v1 as corev1;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1 as metav1;
@@ -10,9 +16,8 @@ use kube::{
     core::GroupVersionKind,
     Client, Config,
 };
-use log::debug;
 use native_tls::Identity;
-use openssl::{pkcs12::Pkcs12, pkey::PKey, x509::X509};
+use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use thiserror::Error;
@@ -38,13 +43,35 @@ pub enum PinnipedError {
 /// Request, Spec and the Status including the returned cluster credential
 /// are structs based on the corresponding structs in the pinniped code at:
 /// https://github.com/vmware-tanzu/pinniped/blob/main/generated/1.19/apis/concierge/login/v1alpha1/types_token.go#L11
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Default, Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct TokenCredentialRequest {
     spec: TokenCredentialRequestSpec,
     status: Option<TokenCredentialRequestStatus>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+// We specifically do not include the request status in the hash generation,
+// considering only the request spec for our caching.
+impl Hash for TokenCredentialRequest {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.spec.hash(state);
+    }
+}
+
+// is_expired is implemented for the request so that the cache can determine if
+// the request has expired.
+impl TokenCredentialRequest {
+    pub fn is_expired(&self) -> bool {
+        match self.status.clone() {
+            Some(s) => match s.credential {
+                Some(c) => c.expiration_timestamp < metav1::Time(Utc::now()),
+                None => true,
+            },
+            None => true,
+        }
+    }
+}
+
+#[derive(Default, Deserialize, Serialize, Clone, Debug)]
 pub struct TokenCredentialRequestSpec {
     // Bearer token supplied with the credential request.
     token: Option<String>,
@@ -53,7 +80,28 @@ pub struct TokenCredentialRequestSpec {
     authenticator: corev1::TypedLocalObjectReference,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+// We need to implement equality explicitly as it's not implemented for
+// TypedLocalObjectReference.
+impl PartialEq for TokenCredentialRequestSpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.token == other.token && self.authenticator.name == other.authenticator.name
+    }
+}
+impl Eq for TokenCredentialRequestSpec {}
+
+// Since the TypedLocalObjectReference doesn't implement the Hash trait
+// we cannot simple derive the Hash trait, instead calculating it manually
+// for the token and authenticator fields.
+impl Hash for TokenCredentialRequestSpec {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.token.hash(state);
+        self.authenticator.api_group.hash(state);
+        self.authenticator.kind.hash(state);
+        self.authenticator.name.hash(state);
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct TokenCredentialRequestStatus {
     // A ClusterCredential will be returned for a successful credential request.
     credential: Option<ClusterCredential>,
@@ -62,9 +110,25 @@ pub struct TokenCredentialRequestStatus {
     message: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-/// ClusterCredential is the cluster-specific credential returned on a successful credential request. It
-/// contains either a valid bearer token or a valid TLS certificate and corresponding private key for the cluster.
+/// A CredentialCache is an atomic-reference-counted cache of
+/// TokenCredentialRequests.
+///
+/// The cache takes care of pruning expired tokens whenever a write lock is
+/// acquired to set a new value.
+/// The Cache key is a 2-tuple of the api endpoint url and the
+/// TokenCredentialRequest.
+pub type CredentialCache =
+    Arc<PruningCache<(String, TokenCredentialRequest), TokenCredentialRequest>>;
+
+/// Return a new CredentialCache.
+pub fn new_credential_cache() -> CredentialCache {
+    Arc::new(PruningCache::new(|(_k, v)| !v.is_expired()))
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+/// ClusterCredential is the cluster-specific credential returned on a
+/// successful credential request. It contains either a valid bearer token or a
+/// valid TLS certificate and corresponding private key for the cluster.
 #[serde(rename_all = "camelCase")]
 pub struct ClusterCredential {
     // ExpirationTimestamp indicates a time when the provided credentials expire.
@@ -80,18 +144,25 @@ pub struct ClusterCredential {
     client_key_data: String,
 }
 
-/// exchange_token_for_identity accepts an authorization header and returns a client cert authentication Identity in exchange.
+/// exchange_token_for_identity accepts an authorization header and returns a
+/// client cert authentication Identity in exchange.
 ///
-/// The token is exchanged with pinniped concierge API running on the identified kubernetes api server.
+/// The token is exchanged with pinniped concierge API running on the identified
+/// kubernetes api server.
 pub async fn exchange_token_for_identity(
     authorization: &str,
     k8s_api_server_url: &str,
     k8s_api_ca_cert_data: &[u8],
+    credential_cache: CredentialCache,
 ) -> Result<Identity> {
-    let credential_request =
-        call_pinniped_exchange(authorization, k8s_api_server_url, k8s_api_ca_cert_data)
-            .await
-            .context("Failed to exchange credentials")?;
+    let credential_request = prepare_and_call_pinniped_exchange(
+        authorization,
+        k8s_api_server_url,
+        k8s_api_ca_cert_data,
+        credential_cache,
+    )
+    .await
+    .context("Failed to exchange credentials")?;
     match credential_request.status {
         Some(s) => {
             match s.credential {
@@ -121,29 +192,22 @@ pub async fn exchange_token_for_identity(
     }
 }
 
-/// identity_for_exchange parses the JSON output of the credential exchange and returns the Identity.
-///
-/// Note: to create an identity, need to go via a pkcs12 currently.
-/// https://github.com/sfackler/rust-native-tls/issues/27#issuecomment-324262673
+/// identity_for_exchange parses the JSON output of the credential exchange and
+/// returns the Identity.
 fn identity_for_exchange(cred: &ClusterCredential) -> Result<Identity> {
-    let pkey = PKey::private_key_from_pem(cred.client_key_data.as_bytes())
-        .context("error creating private key from pem")?;
-    let x509 = X509::from_pem(cred.client_certificate_data.as_bytes())
-        .context("error creating x509 from pem")?;
-
-    let pkcs_cert = Pkcs12::builder()
-        .build("", "friendly-name", &pkey, &x509)
-        .context("Error building Pkcs12 from private key and x509")?;
-    let identity = Identity::from_pkcs12(
-        &pkcs_cert
-            .to_der()
-            .context("error creating der from pkcs12")?,
-        "",
+    let identity = Identity::from_pkcs8(
+        cred.client_certificate_data.as_bytes(),
+        cred.client_key_data.as_bytes(),
     )
-    .context("error creating identity from der-formatted pkcs12")?;
+    .context("error creating identity from x509")?;
     Ok(identity)
 }
 
+// Profiling shows that the call to Client::try_from below can take
+// anywhere from 4ms to 100ms every time for every connection. When
+// a go-lang rest mapper initialises, it requests ~50 different APIs
+// which leads to 3-5s of CPU just in this call. So we ensure this
+// is only called if we need it (ie. the token is not cached).
 fn get_client_config(
     k8s_api_server_url: &str,
     k8s_api_ca_cert_data: &[u8],
@@ -162,37 +226,25 @@ fn get_client_config(
     Ok(Client::try_from(config)?)
 }
 
-/// call_pinniped_exchange returns the resulting TokenCredentialRequest with Status after requesting a token credential exchange.
-async fn call_pinniped_exchange(
+/// prepare_and_call_pinniped_exchange returns the resulting
+/// TokenCredentialRequest with Status after requesting a token credential
+/// exchange.
+async fn prepare_and_call_pinniped_exchange(
     authorization: &str,
     k8s_api_server_url: &str,
     k8s_api_ca_cert_data: &[u8],
+    credential_cache: CredentialCache,
 ) -> Result<TokenCredentialRequest> {
     // context data
     let pinniped_namespace: String = env::var(DEFAULT_PINNIPED_NAMESPACE)?;
     let pinniped_auth_type: String = env::var(DEFAULT_PINNIPED_AUTHENTICATOR_TYPE)?;
     let pinniped_auth_name: String = env::var(DEFAULT_PINNIPED_AUTHENTICATOR_NAME)?;
 
-    // kube client
-    let client = get_client_config(
-        k8s_api_server_url,
-        k8s_api_ca_cert_data,
-        pinniped_namespace.clone(),
-    )?;
-
     // extract token
     let auth_token = match authorization.to_string().strip_prefix("Bearer ") {
         Some(a) => a.to_string(),
         None => authorization.to_string(),
     };
-
-    // define the Api Resource dynamically
-    let gvk = GroupVersionKind::gvk(
-        &get_pinniped_login_api_group(),
-        TOKEN_REQUEST_VERSION,
-        TOKEN_REQUEST_KIND,
-    );
-    let ar = ApiResource::from_gvk(&gvk);
 
     // create request
     let cred_data = TokenCredentialRequest {
@@ -206,15 +258,43 @@ async fn call_pinniped_exchange(
         },
         status: None,
     };
+
+    // If the credential already exists in the cache (the cache handles expired
+    // creds), then return that.
+    match credential_cache.get(&(k8s_api_server_url.into(), cred_data.clone())) {
+        Some(cached_cred) => Ok(cached_cred),
+        None => {
+            let client = get_client_config(
+                k8s_api_server_url,
+                k8s_api_ca_cert_data,
+                pinniped_namespace.clone(),
+            )?;
+            let cred = call_pinniped(pinniped_namespace, client, cred_data.clone()).await?;
+            credential_cache.insert((k8s_api_server_url.into(), cred_data), cred.clone());
+            Ok(cred)
+        }
+    }
+}
+
+async fn call_pinniped(
+    pinniped_namespace: String,
+    client: kube::Client,
+    cred_data: TokenCredentialRequest,
+) -> Result<TokenCredentialRequest> {
+    // define the Api Resource dynamically
+    let gvk = GroupVersionKind::gvk(
+        &get_pinniped_login_api_group(),
+        TOKEN_REQUEST_VERSION,
+        TOKEN_REQUEST_KIND,
+    );
+    let ar = ApiResource::from_gvk(&gvk);
     let cred_request = DynamicObject::new("", &ar)
         .within(&pinniped_namespace)
         .data(serde_json::to_value(cred_data)?);
-    debug!("{}", serde_json::to_string(&cred_request).unwrap());
-
     // token credential request invocation
-    // we start first as a cluster-based call. if this call fails with a NotFound error, it is
-    // an indication we are on an old version which was namespace-based. we thus fallback to
-    // a namespace-based call.
+    // we start first as a cluster-based call. if this call fails with a NotFound
+    // error, it is an indication we are on an old version which was
+    // namespace-based. we thus fallback to a namespace-based call.
     let token_creds_all: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
     match token_creds_all
         .create(&PostParams::default(), &cred_request)
@@ -266,100 +346,479 @@ fn get_pinniped_login_api_group() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
+    use chrono::{Duration, TimeZone, Utc};
+    use std::collections::hash_map::DefaultHasher;
+    use temp_env;
 
     const VALID_CERT_BASE64: &'static str = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUN5RENDQWJDZ0F3SUJBZ0lCQURBTkJna3Foa2lHOXcwQkFRc0ZBREFWTVJNd0VRWURWUVFERXdwcmRXSmwKY201bGRHVnpNQjRYRFRJd01UQXlOakl6TXpBME5Wb1hEVE13TVRBeU5ESXpNekEwTlZvd0ZURVRNQkVHQTFVRQpBeE1LYTNWaVpYSnVaWFJsY3pDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBT1ZKCnFuOVBFZUp3UDRQYnI0cFo1ZjZKUmliOFZ5a2tOYjV2K1hzTVZER01aWGZLb293Y29IYjFwRWh5d0pzeDFiME4Kd2YvZ1JURi9maEgzT0drRnNQMlV2a0lHVytzNUlBd0sxMFRXYkN5VzAwT3lzVkdLcnl5bHNWcEhCWXBZRGJBcQpkdnQzc0FkcFJZaGlLZSs2NkVTL3dQNTdLV3g0SVdwZko0UGpyejh2NkJBWlptZ3o5ZzRCSFNMQkhpbTVFbTdYClBJTmpKL1RJTXFzVW1PR1ppUUNHR0ptRnQxZ21jQTd3eHZ0ZXg2ckkxSWdFNkh5NW10UzJ3NDZaMCtlVU1RSzgKSE9UdnI5aGFETnhJenVjbkduaFlCT2Z2U2VVaXNCR0pOUm5QbENydWx4b2NSZGI3N20rQUdzWW52QitNd2prVQpEbXNQTWZBelpSRHEwekhzcGEwQ0F3RUFBYU1qTUNFd0RnWURWUjBQQVFIL0JBUURBZ0trTUE4R0ExVWRFd0VCCi93UUZNQU1CQWY4d0RRWUpLb1pJaHZjTkFRRUxCUUFEZ2dFQkFBWndybXJLa3FVaDJUYld2VHdwSWlOd0o1NzAKaU9lTVl2WWhNakZxTmt6Tk9OUW55c3lPd1laRGJFMDRrV3AxclRLNHVZaUh3NTJUc0cyelJsZ0QzMzNKaEtvUQpIVloyV1hUT3Z5U2RJaWl5bVpKM2N3d0p2T0lhMW5zZnhYY1NJakJnYnNzYXowMndpRCtlazRPdmlRZktjcXJpCnFQbWZabDZDSkk0NU1rd3JwTExFaTZkNVhGbkhDb3d4eklxQjBrUDhwOFlOaGJYWTNYY2JaNElvY2lMemRBamUKQ1l6NXFVSlBlSDJCcHNaM0JXNXRDbjcycGZYazVQUjlYOFRUTHh6aTA4SU9yYjgvRDB4Tnk3emQyMnVjNXM1bwoveXZIeEt6cXBiczVuRXJkT0JFVXNGWnBpUEhaVGc1dExmWlZ4TG00VjNTZzQwRWUyNFd6d09zaDNIOD0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=";
 
-    // By default cargo will run rust unit tests in parallel. The serial macro ensures that a specific test
-    // (or group of tests) runs serially.
     #[test]
-    #[serial(envtest)]
     fn test_call_pinniped_exchange_no_env() -> Result<()> {
-        env::remove_var(DEFAULT_PINNIPED_NAMESPACE);
-        match tokio_test::block_on(call_pinniped_exchange(
-            "authorization",
-            "https://example.com",
-            VALID_CERT_BASE64.as_bytes(),
-        )) {
-            Ok(_) => anyhow::bail!("expected error"),
-            Err(e) => {
-                assert!(
-                    e.is::<env::VarError>(),
-                    "got: {:#?}, want: {}",
-                    e,
-                    env::VarError::NotPresent
-                );
-                Ok(())
-            }
-        }
+        temp_env::with_var(
+            DEFAULT_PINNIPED_NAMESPACE,
+            None::<String>,
+            || match tokio_test::block_on(prepare_and_call_pinniped_exchange(
+                "authorization",
+                "https://example.com",
+                VALID_CERT_BASE64.as_bytes(),
+                new_credential_cache(),
+            )) {
+                Ok(_) => anyhow::bail!("expected error"),
+                Err(e) => {
+                    assert!(
+                        e.is::<env::VarError>(),
+                        "got: {:#?}, want: {}",
+                        e,
+                        env::VarError::NotPresent
+                    );
+                    Ok(())
+                }
+            },
+        )
     }
 
     #[test]
-    #[serial(envtest)]
     fn test_call_pinniped_exchange_bad_url() -> Result<()> {
-        env::set_var(DEFAULT_PINNIPED_NAMESPACE, "pinniped-concierge");
-        env::set_var(DEFAULT_PINNIPED_AUTHENTICATOR_TYPE, "JWTAuthenticator");
-        env::set_var(DEFAULT_PINNIPED_AUTHENTICATOR_NAME, "oidc-authenticator");
-        match tokio_test::block_on(call_pinniped_exchange(
-            "authorization",
-            "not a url",
-            VALID_CERT_BASE64.as_bytes(),
-        )) {
-            Ok(_) => anyhow::bail!("expected error"),
-            Err(e) => {
-                assert!(
-                    e.is::<http::uri::InvalidUri>(),
-                    "got: {:#?}, want: {}",
-                    e,
-                    "InvalidUri.InvalidUriChar"
-                );
-                Ok(())
-            }
-        }
+        temp_env::with_vars(
+            vec![
+                (DEFAULT_PINNIPED_NAMESPACE, Some("pinniped-concierge")),
+                (
+                    DEFAULT_PINNIPED_AUTHENTICATOR_TYPE,
+                    Some("JWTAuthenticator"),
+                ),
+                (
+                    DEFAULT_PINNIPED_AUTHENTICATOR_NAME,
+                    Some("oidc-authenticator"),
+                ),
+            ],
+            || match tokio_test::block_on(prepare_and_call_pinniped_exchange(
+                "authorization",
+                "not a url",
+                VALID_CERT_BASE64.as_bytes(),
+                new_credential_cache(),
+            )) {
+                Ok(_) => anyhow::bail!("expected error"),
+                Err(e) => {
+                    assert!(
+                        e.is::<http::uri::InvalidUri>(),
+                        "got: {:#?}, want: {}",
+                        e,
+                        "InvalidUri.InvalidUriChar"
+                    );
+                    Ok(())
+                }
+            },
+        )
     }
 
     #[test]
-    #[serial(envtest)]
     fn test_call_pinniped_exchange_bad_cert() -> Result<()> {
-        env::set_var(DEFAULT_PINNIPED_NAMESPACE, "pinniped-concierge");
-        env::set_var(DEFAULT_PINNIPED_AUTHENTICATOR_TYPE, "JWTAuthenticator");
-        env::set_var(DEFAULT_PINNIPED_AUTHENTICATOR_NAME, "oidc-authenticator");
-        match tokio_test::block_on(call_pinniped_exchange(
-            "authorization",
-            "https://example.com",
-            "not a cert".as_bytes(),
-        )) {
+        temp_env::with_vars(
+            vec![
+                (DEFAULT_PINNIPED_NAMESPACE, Some("pinniped-concierge")),
+                (
+                    DEFAULT_PINNIPED_AUTHENTICATOR_TYPE,
+                    Some("JWTAuthenticator"),
+                ),
+                (
+                    DEFAULT_PINNIPED_AUTHENTICATOR_NAME,
+                    Some("oidc-authenticator"),
+                ),
+            ],
+            || match tokio_test::block_on(prepare_and_call_pinniped_exchange(
+                "authorization",
+                "https://example.com",
+                "not a cert".as_bytes(),
+                new_credential_cache(),
+            )) {
+                Ok(_) => anyhow::bail!("expected error"),
+                Err(e) => {
+                    assert!(
+                        e.is::<openssl::error::ErrorStack>(),
+                        "got: {:#?}, want: openssl::error::ErrorStack",
+                        e
+                    );
+                    Ok(())
+                }
+            },
+        )
+    }
+
+    #[test]
+    fn test_get_api_group_getters() -> Result<()> {
+        temp_env::with_var(DEFAULT_PINNIPED_API_SUFFIX, None::<String>, || {
+            let authenticator_api_group = get_pinniped_authenticator_api_group();
+            assert_eq!(
+                authenticator_api_group,
+                "authentication.concierge.pinniped.dev"
+            );
+
+            let login_api_group = get_pinniped_login_api_group();
+            assert_eq!(login_api_group, "login.concierge.pinniped.dev");
+
+            env::set_var(DEFAULT_PINNIPED_API_SUFFIX, "foo.bar");
+            let authenticator_api_group = get_pinniped_authenticator_api_group();
+            assert_eq!(authenticator_api_group, "authentication.concierge.foo.bar");
+
+            let login_api_group = get_pinniped_login_api_group();
+            assert_eq!(login_api_group, "login.concierge.foo.bar");
+            Ok(())
+        })
+    }
+
+    // RSA cert and key generated using
+    // https://support.google.com/cloudidentity/answer/6342198?hl=en
+    const VALID_CERT_PEM: &'static str = "-----BEGIN CERTIFICATE-----
+MIIDazCCAlOgAwIBAgIUBQl5lApAIWapfksb8y6nGWrvmWQwDQYJKoZIhvcNAQEL
+BQAwRTELMAkGA1UEBhMCQVUxEzARBgNVBAgMClNvbWUtU3RhdGUxITAfBgNVBAoM
+GEludGVybmV0IFdpZGdpdHMgUHR5IEx0ZDAeFw0yMjA2MDgwMjQ0NTdaFw0yMjA3
+MDgwMjQ0NTdaMEUxCzAJBgNVBAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEw
+HwYDVQQKDBhJbnRlcm5ldCBXaWRnaXRzIFB0eSBMdGQwggEiMA0GCSqGSIb3DQEB
+AQUAA4IBDwAwggEKAoIBAQDKCpsDtZDgG7sgoMkTHFXfPEjJlfnWoDCWrC9DT3d7
+o36gOQrnXzfJvf8ySg6YWX0qbbMLL1kwfRTo2xlaQIed2N+JPLhKVsdAtl8wh0wx
+1ItgZQPzx5fdvjcBlcxWgxZovNwIv45Bsu3T2jh2qJmCXmq6Z/3Y8Kk+IGZvj8rT
+qZygRF9/UupVWFNUCTivQwB4mkjNxOvYYfJ1T0NidlfxIswXecn7JQzRApyTvwrh
+F4/pVXK4ZNy5U+ZrxJ5CLLMlng7FSeB2dBGTi1knaq9vtxwpXKM3ukvjoSq9lMu8
+Kfjs/W+V2g81ClvquOACel8D5+hgItpwLJRCkYuFvRSVAgMBAAGjUzBRMB0GA1Ud
+DgQWBBSDayGbQJejUul4VD0cHmNEFYKO7TAfBgNVHSMEGDAWgBSDayGbQJejUul4
+VD0cHmNEFYKO7TAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQCQ
+Ypsr6ad4c0TBJsiCEaGCcWVtHAL2KqlGguhL+Ao69/VEI6Lg7UuMoBBGlAI6FAfQ
+XU+ndWsdY/3U8H2ZCpCP5muStqcYbj3ZNHxQhuNLQl/BL5wkr62nZ6M0sRrPDOXH
+xzv/gz4FwPlgO2Pxb1IwqkW1ZoSmU7lK+OJSFbaSsRVjClkoFT5gFxmKSauqzY+0
+BzItnYcwueDkUdgBvKPk4vDQ0NQEpGTOUHTXU6vh3Ioho38sQphNeNgEkTmz2UDk
+MOpW248fauBDkVOQi5AEWYiPG0KMGICk+Pg+gEdDCXrKMwGXN1ys9sxifOqIBFrz
+tGsw5ToC/b5hvjv96OYb
+-----END CERTIFICATE-----";
+
+    const VALID_KEY_PEM: &'static str = "-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDKCpsDtZDgG7sg
+oMkTHFXfPEjJlfnWoDCWrC9DT3d7o36gOQrnXzfJvf8ySg6YWX0qbbMLL1kwfRTo
+2xlaQIed2N+JPLhKVsdAtl8wh0wx1ItgZQPzx5fdvjcBlcxWgxZovNwIv45Bsu3T
+2jh2qJmCXmq6Z/3Y8Kk+IGZvj8rTqZygRF9/UupVWFNUCTivQwB4mkjNxOvYYfJ1
+T0NidlfxIswXecn7JQzRApyTvwrhF4/pVXK4ZNy5U+ZrxJ5CLLMlng7FSeB2dBGT
+i1knaq9vtxwpXKM3ukvjoSq9lMu8Kfjs/W+V2g81ClvquOACel8D5+hgItpwLJRC
+kYuFvRSVAgMBAAECggEANZ0w24Af7MiPFK52DUM0qmOF8TCCNukVW7ZfaF47F60g
+GgZpFVLYLAnmIYMzckw1AcBQhcRPx6U5mj0h8igzlLiLQRDC2r9CarK6edc9ae+7
++J11uggaDba/RAVrTv3EQZD0VsH2TwrbP5+l4h8FdWn2qnaUDzB1yM2yQSKIMThV
+UcnDCkDmlNw+o6rTYqi89uyagPOSdmXo+ebuvp5pu+fmQcRlCBGN3P40pS8t5EAe
+7wehYgOuJvbLawj8n/B7jVOmCY2dRtjBzeTLsrysvqtwoFq9m4qWsx2UwnfOMU4B
+XUY8EgA1meNjWZgZWLk2zEH/nqL7LIsqWd2Qr7x0dQKBgQDs0cwWxnxQq+Ku0tSy
+9HrNcNnk0+OULFDXEwkSfdIOJB5m2oeii1dgJ6TR7PGYfj1j9kIgQ1njmTVL8XgK
+QtjQgIyM0mVndnEW2T6U1eq4vwvLniCj/V73KGILjev2uuAP3VTXTEpZy9929Jkn
+7Lm46eAoxLJUrmKgaXYCUXMbtwKBgQDaZ7ikwLqtp9QBvn5UN996RD5Q57qjBov4
+sOV77cuhXfGJUoQnDBRryAcUdAUtNZZWiHLG4ovCGzuzIvzBUndTEPNAizGBmsep
+cpaysLwD450AjpmTAB7bSy1Xcj7hcSjl0Y9JIhATPH3iOUVnYFx8Cfk051BJtJCp
+r9zVkYoqEwKBgQDCM51IhAZH5Vyj/rJ7+i6GMGgO1Y/H37t/U9XZuyI5hHcF42jc
+66WAbaIkoEjSw5s2USiS6ohZMzdYirDkwUKpYPFhPdv4R1Gf6hD+3pl4XPqgRJEB
+yfJJfm1AimaZU1AQ0nETiTVjg+NB2n2KFv+KWwf+hqay+LpaT4F9jyt06wKBgDxR
+sRkvcV9Mnqzso4827y2hc2R823ry7+17TaXwgvDKNU8rzvvJxkoOMIZhlJxr1F2J
+yclMADVXuCE9ZHkwAWybndMRnlahHMubrisjzIl2b4Ib4CZNPjhqhtdD4kH5MsZm
+HiCgm7f0WQAFuTlXz7MiPgVybSYuDFYRD/ib/YCpAoGBAI4kCCy9yy3CCt8xKDes
+A1hAfFSMLKYFQgB5NGbJk6l/5qyUBmXUO/WJ/BzMi/RIGzp9w6HT3e2FAiS3jnMo
+fbMIp6gTs4+dKJM2o5YtCOQ4nAarWgNT5pRwo18C3/1FEhqRejBob2g9Kx9ymKwR
+mZu9A/ivt37pOQXm/HOX6tHB
+-----END PRIVATE KEY-----";
+
+    #[test]
+    fn test_identity_for_exchange() -> Result<()> {
+        let valid_credential: ClusterCredential = ClusterCredential {
+            client_certificate_data: String::from(VALID_CERT_PEM),
+            client_key_data: String::from(VALID_KEY_PEM),
+            expiration_timestamp: metav1::Time(Utc.timestamp_opt(0, 0).single().unwrap()),
+            token: Some(String::from("")),
+        };
+
+        let result = identity_for_exchange(&valid_credential);
+        match result {
+            Err(e) => anyhow::bail!("expected Ok, got {:#?}", e),
+            Ok(_) => {}
+        }
+
+        let cred_with_bad_cert = ClusterCredential {
+            client_certificate_data: String::from("foo"),
+            ..valid_credential.clone()
+        };
+
+        if identity_for_exchange(&cred_with_bad_cert).is_ok() {
+            anyhow::bail!("expected error");
+        }
+
+        let cred_with_bad_key = ClusterCredential {
+            client_key_data: String::from("foo"),
+            ..valid_credential.clone()
+        };
+
+        match identity_for_exchange(&cred_with_bad_key) {
             Ok(_) => anyhow::bail!("expected error"),
-            Err(e) => {
-                assert!(
-                    e.is::<openssl::error::ErrorStack>(),
-                    "got: {:#?}, want: openssl::error::ErrorStack",
-                    e
-                );
-                Ok(())
-            }
+            Err(_) => Ok(()),
+        }
+    }
+
+    // Without any changes, the make_token_credential_request function
+    // returns a request with the following hash.
+    const DEFAULT_TOKEN_CREDENTIAL_REQUEST_HASH: u64 = 2363471629413450951;
+
+    fn make_token_credential_request() -> TokenCredentialRequest {
+        TokenCredentialRequest {
+            spec: TokenCredentialRequestSpec {
+                token: Some(String::from("fake-token")),
+                authenticator: corev1::TypedLocalObjectReference {
+                    name: String::from("fake-authenticator-name"),
+                    kind: String::from("fake-authenticator-kind"),
+                    api_group: Some(get_pinniped_authenticator_api_group().into()),
+                },
+            },
+            status: None,
         }
     }
 
     #[test]
-    #[serial(envtest)]
-    fn test_get_api_group_getters() -> Result<()> {
-        env::remove_var("DEFAULT_PINNIPED_API_SUFFIX");
-        let authenticator_api_group = get_pinniped_authenticator_api_group();
-        assert_eq!(
-            authenticator_api_group,
-            "authentication.concierge.pinniped.dev"
+    fn test_token_credential_request_hash_default() -> Result<()> {
+        temp_env::with_var(DEFAULT_PINNIPED_API_SUFFIX, None::<String>, || {
+            let cred_data = make_token_credential_request();
+            println!(
+                "api group is: {:#?}",
+                cred_data.spec.authenticator.api_group
+            );
+
+            let mut hasher = DefaultHasher::new();
+            cred_data.hash(&mut hasher);
+
+            assert_eq!(hasher.finish(), DEFAULT_TOKEN_CREDENTIAL_REQUEST_HASH);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_token_credential_request_hash_differs_with_token() -> Result<()> {
+        temp_env::with_var(DEFAULT_PINNIPED_API_SUFFIX, None::<String>, || {
+            let mut cred_data = make_token_credential_request();
+            cred_data.spec.token = Some(String::from("another-token"));
+
+            let mut hasher = DefaultHasher::new();
+            cred_data.hash(&mut hasher);
+
+            assert!(hasher.finish() != DEFAULT_TOKEN_CREDENTIAL_REQUEST_HASH);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_token_credential_request_hash_differs_with_authenticator() -> Result<()> {
+        temp_env::with_var(DEFAULT_PINNIPED_API_SUFFIX, None::<String>, || {
+            let mut cred_data = make_token_credential_request();
+            cred_data.spec.authenticator.name = String::from("another-authenticator-name");
+
+            let mut hasher = DefaultHasher::new();
+            cred_data.hash(&mut hasher);
+
+            assert!(hasher.finish() != DEFAULT_TOKEN_CREDENTIAL_REQUEST_HASH);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_token_credential_request_hash_identical_with_status_change() -> Result<()> {
+        temp_env::with_var(DEFAULT_PINNIPED_API_SUFFIX, None::<String>, || {
+            let mut cred_data = make_token_credential_request();
+            cred_data.status = Some(TokenCredentialRequestStatus {
+                credential: Some(ClusterCredential {
+                    token: Some(String::from("returned token")),
+                    client_certificate_data: String::from("cert-data"),
+                    client_key_data: String::from("key-data"),
+                    expiration_timestamp: metav1::Time(Utc.timestamp_opt(0, 0).single().unwrap()),
+                }),
+                message: Some(String::from("some status message")),
+            });
+
+            let mut hasher = DefaultHasher::new();
+            cred_data.hash(&mut hasher);
+
+            assert_eq!(hasher.finish(), DEFAULT_TOKEN_CREDENTIAL_REQUEST_HASH);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_token_credential_request_without_status_is_expired() -> Result<()> {
+        let cred_data = make_token_credential_request();
+
+        assert!(cred_data.is_expired());
+        Ok(())
+    }
+
+    #[test]
+    fn test_token_credential_request_without_credential_is_expired() -> Result<()> {
+        let mut cred_data = make_token_credential_request();
+        cred_data.status = Some(TokenCredentialRequestStatus {
+            credential: None,
+            message: Some(String::from("some message")),
+        });
+
+        assert!(cred_data.is_expired());
+        Ok(())
+    }
+
+    #[test]
+    fn test_token_credential_request_with_old_expiry_is_expired() -> Result<()> {
+        let mut cred_data = make_token_credential_request();
+        cred_data.status = Some(TokenCredentialRequestStatus {
+            credential: Some(ClusterCredential {
+                expiration_timestamp: metav1::Time(Utc.timestamp_opt(0, 0).single().unwrap()),
+                client_certificate_data: String::from("cert data"),
+                client_key_data: String::from("key data"),
+                token: Some(String::from("token")),
+            }),
+            message: None,
+        });
+
+        assert!(cred_data.is_expired());
+        Ok(())
+    }
+
+    #[test]
+    fn test_token_credential_request_with_future_expiry_is_not_expired() -> Result<()> {
+        let mut cred_data = make_token_credential_request();
+        cred_data.status = Some(TokenCredentialRequestStatus {
+            credential: Some(ClusterCredential {
+                expiration_timestamp: metav1::Time(Utc::now() + Duration::days(1)),
+                client_certificate_data: String::from("cert data"),
+                client_key_data: String::from("key data"),
+                token: Some(String::from("token")),
+            }),
+            message: None,
+        });
+
+        assert!(!cred_data.is_expired());
+        Ok(())
+    }
+
+    const KUBEAPPS_LOCAL: &str = "https://kubeapps.local";
+
+    #[test]
+    fn test_credential_cache_cannot_add_expired_token() {
+        let cc = new_credential_cache();
+
+        let key_tcr = make_token_credential_request();
+        assert!(key_tcr.is_expired());
+
+        cc.insert((KUBEAPPS_LOCAL.into(), key_tcr.clone()), key_tcr);
+
+        assert_eq!(cc.len(), 0);
+    }
+
+    #[test]
+    fn test_credential_cache_can_add_non_expired_token() {
+        let cc = new_credential_cache();
+
+        let key_tcr = make_token_credential_request();
+        let mut val_tcr = key_tcr.clone();
+        val_tcr.status = Some(TokenCredentialRequestStatus {
+            credential: Some(ClusterCredential {
+                expiration_timestamp: metav1::Time(Utc::now() + Duration::days(1)),
+                client_certificate_data: String::from("cert data"),
+                client_key_data: String::from("key data"),
+                token: Some(String::from("token")),
+            }),
+            message: None,
+        });
+        assert!(!val_tcr.is_expired());
+
+        cc.insert((KUBEAPPS_LOCAL.into(), key_tcr.clone()), val_tcr.clone());
+
+        assert_eq!(cc.len(), 1);
+        assert_eq!(cc.get(&(KUBEAPPS_LOCAL.into(), key_tcr)), Some(val_tcr));
+    }
+
+    #[test]
+    fn test_credential_cache_key_includes_api_server_url() {
+        // More for documentation given that the key is whatever we define
+        // it to be, but to document https://github.com/vmware-tanzu/kubeapps/issues/5912
+        let cc = new_credential_cache();
+
+        let key_tcr = make_token_credential_request();
+        let mut val_tcr = key_tcr.clone();
+        val_tcr.status = Some(TokenCredentialRequestStatus {
+            credential: Some(ClusterCredential {
+                expiration_timestamp: metav1::Time(Utc::now() + Duration::days(1)),
+                client_certificate_data: String::from("cert data"),
+                client_key_data: String::from("key data"),
+                token: Some(String::from("token")),
+            }),
+            message: None,
+        });
+        assert!(!val_tcr.is_expired());
+
+        // Adding the same key twice does not result in two cached values:
+        cc.insert((KUBEAPPS_LOCAL.into(), key_tcr.clone()), val_tcr.clone());
+        cc.insert((KUBEAPPS_LOCAL.into(), key_tcr.clone()), val_tcr.clone());
+
+        assert_eq!(cc.len(), 1);
+
+        // Adding the same TCR with a different k8s api url *does* result in a
+        // separately cached value:
+        cc.insert(
+            ("https://172.168.0.3:6443".into(), key_tcr.clone()),
+            val_tcr.clone(),
         );
 
-        let login_api_group = get_pinniped_login_api_group();
-        assert_eq!(login_api_group, "login.concierge.pinniped.dev");
+        assert_eq!(cc.len(), 2);
+    }
 
-        env::set_var(DEFAULT_PINNIPED_API_SUFFIX, "foo.bar");
-        let authenticator_api_group = get_pinniped_authenticator_api_group();
-        assert_eq!(authenticator_api_group, "authentication.concierge.foo.bar");
+    #[test]
+    fn test_credential_cache_prunes_expired_tokens() {
+        let cc = new_credential_cache();
 
-        let login_api_group = get_pinniped_login_api_group();
-        assert_eq!(login_api_group, "login.concierge.foo.bar");
-        Ok(())
+        // Insert a credential that will expire in 1 millisecond.
+        let key_tcr = make_token_credential_request();
+        let mut val_tcr = key_tcr.clone();
+        val_tcr.status = Some(TokenCredentialRequestStatus {
+            credential: Some(ClusterCredential {
+                expiration_timestamp: metav1::Time(Utc::now() + Duration::milliseconds(1)),
+                client_certificate_data: String::from("cert data"),
+                client_key_data: String::from("key data"),
+                token: Some(String::from("token")),
+            }),
+            message: None,
+        });
+        cc.insert((KUBEAPPS_LOCAL.into(), key_tcr.clone()), val_tcr.clone());
+
+        assert!(!val_tcr.is_expired());
+        assert_eq!(cc.len(), 1);
+
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        // Now the credential will still be present (as there hasn't been a write
+        // operation), but will not be returned as it has expired.
+        assert_eq!(cc.len(), 1);
+        assert_eq!(cc.get(&(KUBEAPPS_LOCAL.into(), key_tcr.clone())), None);
+
+        // But if we update the cache (where a write lock will be used) the expired
+        // one will be removed.
+        let key_tcr_2 = TokenCredentialRequest {
+            spec: TokenCredentialRequestSpec {
+                token: Some(String::from("fake-token-2")),
+                ..key_tcr.spec.clone()
+            },
+            ..key_tcr.clone()
+        };
+        let mut val_tcr_2 = key_tcr_2.clone();
+        val_tcr_2.status = Some(TokenCredentialRequestStatus {
+            credential: Some(ClusterCredential {
+                expiration_timestamp: metav1::Time(Utc::now() + Duration::days(1)),
+                client_certificate_data: String::from("cert data"),
+                client_key_data: String::from("key data"),
+                token: Some(String::from("token")),
+            }),
+            message: None,
+        });
+        cc.insert(
+            (KUBEAPPS_LOCAL.into(), key_tcr_2.clone()),
+            val_tcr_2.clone(),
+        );
+
+        assert_eq!(cc.len(), 1);
+        assert_eq!(cc.get(&(KUBEAPPS_LOCAL.into(), key_tcr)), None);
+        assert_eq!(cc.get(&(KUBEAPPS_LOCAL.into(), key_tcr_2)), Some(val_tcr_2));
     }
 }

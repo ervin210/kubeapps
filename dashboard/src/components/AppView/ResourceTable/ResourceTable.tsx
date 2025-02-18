@@ -1,9 +1,13 @@
+// Copyright 2019-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsIcon } from "@cds/react/icon";
-import Table from "components/js/Table";
 import LoadingWrapper from "components/LoadingWrapper/LoadingWrapper";
+import Table from "components/Table";
+import { filterByResourceRefs } from "containers/helpers";
+import { ResourceRef } from "gen/kubeappsapis/core/packages/v1alpha1/packages_pb";
 import { useMemo } from "react";
 import { useSelector } from "react-redux";
-import { ResourceRef } from "gen/kubeappsapis/core/packages/v1alpha1/packages";
 import { IKubeItem, IResource, ISecret, IStoreState } from "shared/types";
 import { DaemonSetColumns } from "./ResourceData/DaemonSet";
 import { DeploymentColumns } from "./ResourceData/Deployment";
@@ -11,7 +15,6 @@ import { OtherResourceColumns } from "./ResourceData/OtherResource";
 import { SecretColumns } from "./ResourceData/Secret";
 import { ServiceColumns } from "./ResourceData/Service";
 import { StatefulSetColumns } from "./ResourceData/StatefulSet";
-import { filterByResourceRefs } from "containers/helpers";
 
 interface IResourceTableProps {
   id: string;
@@ -43,7 +46,7 @@ function getData(
   getters: Array<(r: any) => string | JSX.Element | JSX.Element[]>,
   resource?: IKubeItem<IResource | ISecret>,
 ) {
-  const data = {
+  const data: { [index: string]: any } = {
     name,
   };
   if (!resource || resource.isFetching) {

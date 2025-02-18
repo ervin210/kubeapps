@@ -1,7 +1,10 @@
+// Copyright 2018-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { ThunkAction } from "redux-thunk";
 import { Auth } from "shared/Auth";
 import * as Namespace from "shared/Namespace";
-import { IStoreState } from "shared/types";
+import { IStoreState, UnauthorizedNetworkError } from "shared/types";
 import { ActionType, deprecated } from "typesafe-actions";
 import { clearClusters, NamespaceAction } from "./namespace";
 
@@ -23,7 +26,7 @@ export const setSessionExpired = createAction("SET_AUTHENTICATION_SESSION_EXPIRE
 
 const allActions = [setAuthenticated, authenticating, authenticationError, setSessionExpired];
 
-export type AuthAction = ActionType<typeof allActions[number]>;
+export type AuthAction = ActionType<(typeof allActions)[number]>;
 
 export function authenticate(
   cluster: string,
@@ -66,6 +69,27 @@ export function logout(): ThunkAction<
     }
     Namespace.unsetStoredNamespace();
   };
+}
+
+export function logoutByAuthenticationError(): ThunkAction<
+  Promise<void>,
+  IStoreState,
+  null,
+  AuthAction | NamespaceAction
+> {
+  return async dispatch => {
+    dispatch(logout());
+    dispatch(authenticationError("Unauthorized"));
+    dispatch(expireSession());
+  };
+}
+
+export function handleErrorAction(error: any, action?: ActionType<any>) {
+  if (error.constructor === UnauthorizedNetworkError) {
+    return logoutByAuthenticationError();
+  } else if (action) {
+    return action;
+  }
 }
 
 export function expireSession(): ThunkAction<Promise<void>, IStoreState, null, AuthAction> {

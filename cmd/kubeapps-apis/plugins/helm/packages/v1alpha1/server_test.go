@@ -1,15 +1,5 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2024 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
@@ -17,55 +7,65 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/bufbuild/connect-go"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/helm/packages/v1alpha1/utils/fake"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/pkg/helm/agent"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/kubeapps/kubeapps/cmd/apprepository-controller/pkg/apis/apprepository/v1alpha1"
-	"github.com/kubeapps/kubeapps/cmd/assetsvc/pkg/utils"
-	corev1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
-	plugins "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
-	helmv1 "github.com/kubeapps/kubeapps/cmd/kubeapps-apis/gen/plugins/helm/packages/v1alpha1"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/plugins/pkg/clientgetter"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/plugins/pkg/paginate"
-	"github.com/kubeapps/kubeapps/cmd/kubeapps-apis/plugins/pkg/pkgutils"
-	"sigs.k8s.io/yaml"
-
-	"github.com/kubeapps/kubeapps/pkg/agent"
-	"github.com/kubeapps/kubeapps/pkg/chart/fake"
-	"github.com/kubeapps/kubeapps/pkg/chart/models"
-	"github.com/kubeapps/kubeapps/pkg/dbutils"
+	"github.com/vmware-tanzu/kubeapps/cmd/apprepository-controller/pkg/apis/apprepository/v1alpha1"
+	appRepov1alpha1 "github.com/vmware-tanzu/kubeapps/cmd/apprepository-controller/pkg/apis/apprepository/v1alpha1"
+	corev1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/packages/v1alpha1"
+	plugins "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/core/plugins/v1alpha1"
+	helmv1 "github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/gen/plugins/helm/packages/v1alpha1"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/helm/packages/v1alpha1/common"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/helm/packages/v1alpha1/utils"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/pkg/clientgetter"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/pkg/paginate"
+	"github.com/vmware-tanzu/kubeapps/cmd/kubeapps-apis/plugins/pkg/pkgutils"
+	"github.com/vmware-tanzu/kubeapps/pkg/chart/models"
+	"github.com/vmware-tanzu/kubeapps/pkg/dbutils"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/anypb"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
-	kube "helm.sh/helm/v3/pkg/kube"
+	"helm.sh/helm/v3/pkg/kube"
 	kubefake "helm.sh/helm/v3/pkg/kube/fake"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage"
 	"helm.sh/helm/v3/pkg/storage/driver"
 	authorizationv1 "k8s.io/api/authorization/v1"
-	"k8s.io/apimachinery/pkg/runtime"
+	apiextfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
+	"k8s.io/apiserver/pkg/storage/names"
 	dynfake "k8s.io/client-go/dynamic/fake"
-	"k8s.io/client-go/kubernetes"
 	typfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	log "k8s.io/klog/v2"
+	"sigs.k8s.io/yaml"
 )
 
 const (
-	globalPackagingNamespace = "kubeapps"
+	globalPackagingNamespace = "kubeapps-repos-global"
+	kubeappsNamespace        = "kubeapps"
 	globalPackagingCluster   = "default"
 	DefaultAppVersion        = "1.2.6"
 	DefaultReleaseRevision   = 1
@@ -81,66 +81,57 @@ func setMockManager(t *testing.T) (sqlmock.Sqlmock, func(), utils.AssetManager) 
 	if err != nil {
 		t.Fatalf("%+v", err)
 	}
-	manager = &utils.PostgresAssetManager{&dbutils.PostgresAssetManager{DB: db, GlobalReposNamespace: globalPackagingNamespace}}
+	manager = &utils.PostgresAssetManager{PostgresAssetManagerIface: &dbutils.PostgresAssetManager{DB: db, GlobalPackagingNamespace: globalPackagingNamespace}}
 	return mock, func() { db.Close() }, manager
 }
 
 func TestGetClient(t *testing.T) {
-	dbConfig := dbutils.Config{URL: "localhost:5432", Database: "assetsvc", Username: "postgres", Password: "password"}
+	dbConfig := dbutils.Config{URL: "localhost:5432", Database: "assets", Username: "postgres", Password: "password"}
 	manager, err := utils.NewPGManager(dbConfig, globalPackagingNamespace)
 	if err != nil {
 		log.Fatalf("%s", err)
 	}
-	testClientGetter := func(context.Context, string) (kubernetes.Interface, dynamic.Interface, error) {
-		return typfake.NewSimpleClientset(), dynfake.NewSimpleDynamicClientWithCustomListKinds(
-			runtime.NewScheme(),
+
+	clientGetter := clientgetter.NewBuilder().
+		WithTyped(typfake.NewSimpleClientset()).
+		WithDynamic(dynfake.NewSimpleDynamicClientWithCustomListKinds(
+			k8sruntime.NewScheme(),
 			map[schema.GroupVersionResource]string{
 				{Group: "foo", Version: "bar", Resource: "baz"}: "PackageList",
 			},
-		), nil
-	}
+		)).Build()
 
 	testCases := []struct {
-		name              string
-		manager           utils.AssetManager
-		clientGetter      clientgetter.ClientGetterFunc
-		statusCodeClient  codes.Code
-		statusCodeManager codes.Code
+		name             string
+		manager          utils.AssetManager
+		clientGetter     clientgetter.ClientProviderInterface
+		errorCodeClient  connect.Code
+		errorCodeManager connect.Code
 	}{
 		{
-			name:              "it returns internal error status when no clientGetter configured",
-			manager:           manager,
-			clientGetter:      nil,
-			statusCodeClient:  codes.Internal,
-			statusCodeManager: codes.OK,
+			name:             "it returns internal error status when no manager configured",
+			manager:          nil,
+			clientGetter:     clientGetter,
+			errorCodeManager: connect.CodeInternal,
 		},
 		{
-			name:              "it returns internal error status when no manager configured",
-			manager:           nil,
-			clientGetter:      testClientGetter,
-			statusCodeClient:  codes.OK,
-			statusCodeManager: codes.Internal,
-		},
-		{
-			name:              "it returns internal error status when no clientGetter/manager configured",
-			manager:           nil,
-			clientGetter:      nil,
-			statusCodeClient:  codes.Internal,
-			statusCodeManager: codes.Internal,
-		},
-		{
-			name:    "it returns failed-precondition when configGetter itself errors",
+			name:    "it returns whatever error the clients getter function returns",
 			manager: manager,
-			clientGetter: func(context.Context, string) (kubernetes.Interface, dynamic.Interface, error) {
-				return nil, nil, fmt.Errorf("Bang!")
-			},
-			statusCodeClient:  codes.FailedPrecondition,
-			statusCodeManager: codes.OK,
+			clientGetter: &clientgetter.ClientProvider{ClientsFunc: func(headers http.Header, cluster string) (*clientgetter.ClientGetter, error) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("Bang!"))
+			}},
+			errorCodeClient: connect.CodeFailedPrecondition,
+		},
+		{
+			name:            "it returns failed-precondition when clients getter function is not set",
+			manager:         manager,
+			clientGetter:    &clientgetter.ClientProvider{ClientsFunc: nil},
+			errorCodeClient: connect.CodeFailedPrecondition,
 		},
 		{
 			name:         "it returns client without error when configured correctly",
 			manager:      manager,
-			clientGetter: testClientGetter,
+			clientGetter: clientGetter,
 		},
 	}
 
@@ -148,25 +139,26 @@ func TestGetClient(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := Server{clientGetter: tc.clientGetter, manager: tc.manager}
 
-			typedClient, dynamicClient, errClient := s.GetClients(context.Background(), "")
-
-			if got, want := status.Code(errClient), tc.statusCodeClient; got != want {
-				t.Errorf("got: %+v, want: %+v", got, want)
+			clientsProvider, errClient := s.clientGetter.GetClients(http.Header{}, "")
+			if got, want := connect.CodeOf(errClient), tc.errorCodeClient; errClient != nil && got != want {
+				t.Errorf("got: %+v, want: %+v. err: %+v", got, want, errClient)
 			}
 
 			_, errManager := s.GetManager()
 
-			if got, want := status.Code(errManager), tc.statusCodeManager; got != want {
+			if got, want := connect.CodeOf(errManager), tc.errorCodeManager; errManager != nil && got != want {
 				t.Errorf("got: %+v, want: %+v", got, want)
 			}
 
 			// If there is no error, the client should be a dynamic.Interface implementation.
-			if tc.statusCodeClient == codes.OK {
-				if dynamicClient == nil {
-					t.Errorf("got: nil, want: dynamic.Interface")
+			if tc.errorCodeClient == 0 {
+				_, err := clientsProvider.Dynamic()
+				if err != nil {
+					t.Errorf("got: nil, want: dynamic.Interface. error %v", err)
 				}
-				if typedClient == nil {
-					t.Errorf("got: nil, want: kubernetes.Interface")
+				_, err = clientsProvider.Typed()
+				if err != nil {
+					t.Errorf("got: nil, want: kubernetes.Interface. error %v", err)
 				}
 			}
 		})
@@ -174,30 +166,30 @@ func TestGetClient(t *testing.T) {
 }
 
 // makeChart makes a chart with specific input used in the test and default constants for other relevant data.
-func makeChart(chart_name, repo_name, repo_url, namespace string, chart_versions []string, category string) *models.Chart {
+func makeChart(chartName, repoName, repoUrl, namespace string, chartVersions []string, category string) *models.Chart {
 	ch := &models.Chart{
-		Name:        chart_name,
-		ID:          fmt.Sprintf("%s/%s", repo_name, chart_name),
+		Name:        chartName,
+		ID:          fmt.Sprintf("%s/%s", repoName, chartName),
 		Category:    category,
 		Description: DefaultChartDescription,
 		Home:        DefaultChartHomeURL,
 		Icon:        DefaultChartIconURL,
 		Maintainers: []chart.Maintainer{{Name: "me", Email: "me@me.me"}},
 		Sources:     []string{"http://source-1"},
-		Repo: &models.Repo{
-			Name:      repo_name,
+		Repo: &models.AppRepository{
+			Name:      repoName,
 			Namespace: namespace,
-			URL:       repo_url,
+			URL:       repoUrl,
 		},
 	}
-	versions := []models.ChartVersion{}
-	for _, v := range chart_versions {
+	var versions []models.ChartVersion
+	for _, v := range chartVersions {
 		versions = append(versions, models.ChartVersion{
-			Version:    v,
-			AppVersion: DefaultAppVersion,
-			Readme:     "not-used",
-			Values:     "not-used",
-			Schema:     "not-used",
+			Version:       v,
+			AppVersion:    DefaultAppVersion,
+			Readme:        "not-used",
+			DefaultValues: "not-used",
+			Schema:        "not-used",
 		})
 	}
 	ch.ChartVersions = versions
@@ -207,7 +199,7 @@ func makeChart(chart_name, repo_name, repo_url, namespace string, chart_versions
 // makeChartRowsJSON returns a slice of paginated JSON chart info data.
 func makeChartRowsJSON(t *testing.T, charts []*models.Chart, pageToken string, pageSize int) []string {
 	// Simulate the pagination by reducing the rows of JSON based on the offset and limit.
-	rowsJSON := []string{}
+	var rowsJSON []string
 	for _, chart := range charts {
 		chartJSON, err := json.Marshal(chart)
 		if err != nil {
@@ -220,14 +212,14 @@ func makeChartRowsJSON(t *testing.T, charts []*models.Chart, pageToken string, p
 	}
 
 	if pageToken != "" {
-		pageOffset, err := paginate.PageOffsetFromPageToken(pageToken)
+		itemOffset, err := paginate.ItemOffsetFromPageToken(pageToken)
 		if err != nil {
 			t.Fatalf("%+v", err)
 		}
 		if pageSize == 0 {
 			t.Fatalf("pagesize must be > 0 when using a page token")
 		}
-		rowsJSON = rowsJSON[((pageOffset - 1) * pageSize):]
+		rowsJSON = rowsJSON[itemOffset:]
 	}
 	if pageSize > 0 && pageSize < len(rowsJSON) {
 		rowsJSON = rowsJSON[0:pageSize]
@@ -236,9 +228,9 @@ func makeChartRowsJSON(t *testing.T, charts []*models.Chart, pageToken string, p
 }
 
 // makeServer returns a server backed with an sql mock and a cleanup function
-func makeServer(t *testing.T, authorized bool, actionConfig *action.Configuration, objects ...runtime.Object) (*Server, sqlmock.Sqlmock, func()) {
+func makeServer(t *testing.T, authorized bool, actionConfig *action.Configuration, objects ...k8sruntime.Object) (*Server, sqlmock.Sqlmock, func()) {
 	// Creating the dynamic client
-	scheme := runtime.NewScheme()
+	scheme := k8sruntime.NewScheme()
 	err := v1alpha1.AddToScheme(scheme)
 	if err != nil {
 		t.Fatalf("%+v", err)
@@ -253,30 +245,157 @@ func makeServer(t *testing.T, authorized bool, actionConfig *action.Configuratio
 
 	// Creating an authorized clientGetter
 	clientSet := typfake.NewSimpleClientset()
-	clientSet.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (handled bool, ret runtime.Object, err error) {
+	clientSet.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (handled bool, ret k8sruntime.Object, err error) {
 		return true, &authorizationv1.SelfSubjectAccessReview{
 			Status: authorizationv1.SubjectAccessReviewStatus{Allowed: authorized},
 		}, nil
 	})
-	clientGetter := func(context.Context, string) (kubernetes.Interface, dynamic.Interface, error) {
-		return clientSet, dynamicClient, nil
-	}
 
 	// Creating the SQL mock manager
 	mock, cleanup, manager := setMockManager(t)
 
 	return &Server{
-		clientGetter:             clientGetter,
+		clientGetter: clientgetter.NewBuilder().
+			WithTyped(clientSet).
+			WithDynamic(dynamicClient).
+			Build(),
 		manager:                  manager,
+		kubeappsNamespace:        kubeappsNamespace,
 		globalPackagingNamespace: globalPackagingNamespace,
 		globalPackagingCluster:   globalPackagingCluster,
-		actionConfigGetter: func(context.Context, *corev1.Context) (*action.Configuration, error) {
+		actionConfigGetter: func(http.Header, *corev1.Context) (*action.Configuration, error) {
 			return actionConfig, nil
 		},
 		chartClientFactory: &fake.ChartClientFactory{},
-		versionsInSummary:  pkgutils.GetDefaultVersionsInSummary(),
+		pluginConfig:       common.NewDefaultPluginConfig(),
 		createReleaseFunc:  agent.CreateRelease,
 	}, mock, cleanup
+}
+
+func newServerWithSecretsAndRepos(t *testing.T, secrets []k8sruntime.Object, repos []*v1alpha1.AppRepository) *Server {
+	typedClient := typfake.NewSimpleClientset(secrets...)
+
+	var unstructuredObjs []k8sruntime.Object
+	for _, obj := range repos {
+		unstructuredContent, _ := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(obj)
+		unstructuredObjs = append(unstructuredObjs, &unstructured.Unstructured{Object: unstructuredContent})
+	}
+
+	// ref https://stackoverflow.com/questions/68794562/kubernetes-fake-client-doesnt-handle-generatename-in-objectmeta/68794563#68794563
+	typedClient.PrependReactor(
+		"create", "*",
+		func(action k8stesting.Action) (handled bool, ret k8sruntime.Object, err error) {
+			ret = action.(k8stesting.CreateAction).GetObject()
+			meta, ok := ret.(metav1.Object)
+			if !ok {
+				return
+			}
+			if meta.GetName() == "" && meta.GetGenerateName() != "" {
+				meta.SetName(names.SimpleNameGenerator.GenerateName(meta.GetGenerateName()))
+			}
+			return
+		})
+
+	// Creating an authorized clientGetter
+	typedClient.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (handled bool, ret k8sruntime.Object, err error) {
+		return true, &authorizationv1.SelfSubjectAccessReview{
+			Status: authorizationv1.SubjectAccessReviewStatus{Allowed: true},
+		}, nil
+	})
+
+	apiExtIfc := apiextfake.NewSimpleClientset(helmAppRepositoryCRD)
+	ctrlClient := newCtrlClient(repos)
+	scheme := k8sruntime.NewScheme()
+	err := v1alpha1.AddToScheme(scheme)
+	if err != nil {
+		log.Fatalf("%s", err)
+	}
+
+	dynClient := dynfake.NewSimpleDynamicClientWithCustomListKinds(
+		scheme,
+		map[schema.GroupVersionResource]string{
+			{
+				Group:    v1alpha1.SchemeGroupVersion.Group,
+				Version:  v1alpha1.SchemeGroupVersion.Version,
+				Resource: AppRepositoryResource,
+			}: AppRepositoryResource + "List",
+		},
+		unstructuredObjs...,
+	)
+
+	return &Server{
+		clientGetter: clientgetter.NewBuilder().
+			WithControllerRuntime(ctrlClient).
+			WithTyped(typedClient).
+			WithApiExt(apiExtIfc).
+			WithDynamic(dynClient).
+			Build(),
+		kubeappsNamespace:        kubeappsNamespace,
+		globalPackagingNamespace: globalPackagingNamespace,
+		globalPackagingCluster:   globalPackagingCluster,
+		chartClientFactory:       &fake.ChartClientFactory{},
+		createReleaseFunc:        agent.CreateRelease,
+		kubeappsCluster:          KubeappsCluster,
+		pluginConfig:             common.NewDefaultPluginConfig(),
+	}
+}
+
+type ClientReaction struct {
+	verb     string
+	resource string
+	reaction k8stesting.ReactionFunc
+}
+
+func newServerWithAppRepoReactors(unstructuredObjs []k8sruntime.Object, repos []*v1alpha1.AppRepository, typedObjects []k8sruntime.Object, typedClientReactions []*ClientReaction, dynClientReactions []*ClientReaction) *Server {
+	typedClient := typfake.NewSimpleClientset(typedObjects...)
+
+	for _, reaction := range typedClientReactions {
+		typedClient.PrependReactor(reaction.verb, reaction.resource, reaction.reaction)
+	}
+
+	apiExtIfc := apiextfake.NewSimpleClientset(helmAppRepositoryCRD)
+	ctrlClient := newCtrlClient(repos)
+	scheme := k8sruntime.NewScheme()
+	err := v1alpha1.AddToScheme(scheme)
+	if err != nil {
+		log.Fatalf("%s", err)
+	}
+	err = authorizationv1.AddToScheme(scheme)
+	if err != nil {
+		log.Fatalf("%s", err)
+	}
+
+	dynClient := dynfake.NewSimpleDynamicClientWithCustomListKinds(
+		scheme,
+		map[schema.GroupVersionResource]string{
+			{
+				Group:    v1alpha1.SchemeGroupVersion.Group,
+				Version:  v1alpha1.SchemeGroupVersion.Version,
+				Resource: AppRepositoryResource,
+			}: AppRepositoryResource + "List",
+		},
+		unstructuredObjs...,
+	)
+
+	for _, reaction := range dynClientReactions {
+		dynClient.PrependReactor(reaction.verb, reaction.resource, reaction.reaction)
+	}
+
+	return &Server{
+		clientGetter: clientgetter.NewBuilder().
+			WithControllerRuntime(ctrlClient).
+			WithTyped(typedClient).
+			WithApiExt(apiExtIfc).
+			WithDynamic(dynClient).
+			Build(),
+		kubeappsNamespace:        kubeappsNamespace,
+		globalPackagingNamespace: globalPackagingNamespace,
+		globalPackagingCluster:   globalPackagingCluster,
+		chartClientFactory:       &fake.ChartClientFactory{},
+		createReleaseFunc:        agent.CreateRelease,
+		kubeappsCluster:          KubeappsCluster,
+		pluginConfig:             common.NewDefaultPluginConfig(),
+	}
 }
 
 func TestGetAvailablePackageSummaries(t *testing.T) {
@@ -284,7 +403,7 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 		name                   string
 		charts                 []*models.Chart
 		expectDBQueryNamespace string
-		statusCode             codes.Code
+		errorCode              connect.Code
 		request                *corev1.GetAvailablePackageSummariesRequest
 		expectedResponse       *corev1.GetAvailablePackageSummariesResponse
 		authorized             bool
@@ -301,9 +420,9 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 			},
 			expectDBQueryNamespace: globalPackagingNamespace,
 			charts: []*models.Chart{
-				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"3.0.0"}, DefaultChartCategory),
-				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"2.0.0"}, DefaultChartCategory),
-				makeChart("chart-3-global", "repo-1", "http://chart-3", globalPackagingNamespace, []string{"2.0.0"}, DefaultChartCategory),
+				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"2.0.0", "3.0.0"}, DefaultChartCategory),
+				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"1.0.0", "2.0.0"}, DefaultChartCategory),
+				makeChart("chart-3-global", "repo-1", "http://chart-3", globalPackagingNamespace, []string{"1.0.0", "2.0.0"}, DefaultChartCategory),
 			},
 			expectedResponse: &corev1.GetAvailablePackageSummariesResponse{
 				AvailablePackageSummaries: []*corev1.AvailablePackageSummary{
@@ -358,7 +477,6 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 				},
 				Categories: []string{"cat1"},
 			},
-			statusCode: codes.OK,
 		},
 		{
 			name:       "it returns a set of availablePackageSummary from the database (specific ns)",
@@ -370,8 +488,8 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 			},
 			expectDBQueryNamespace: "my-ns",
 			charts: []*models.Chart{
-				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"3.0.0"}, DefaultChartCategory),
-				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"2.0.0"}, DefaultChartCategory),
+				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"2.0.0", "3.0.0"}, DefaultChartCategory),
+				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"1.0.0", "2.0.0"}, DefaultChartCategory),
 			},
 			expectedResponse: &corev1.GetAvailablePackageSummariesResponse{
 				AvailablePackageSummaries: []*corev1.AvailablePackageSummary{
@@ -410,7 +528,6 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 				},
 				Categories: []string{"cat1"},
 			},
-			statusCode: codes.OK,
 		},
 		{
 			name:       "it returns a set of the global availablePackageSummary from the database (not the specific ns on other cluster)",
@@ -423,8 +540,8 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 			},
 			expectDBQueryNamespace: globalPackagingNamespace,
 			charts: []*models.Chart{
-				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"3.0.0"}, DefaultChartCategory),
-				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"2.0.0"}, DefaultChartCategory),
+				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"2.0.0", "3.0.0"}, DefaultChartCategory),
+				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"1.0.0", "2.0.0"}, DefaultChartCategory),
 			},
 			expectedResponse: &corev1.GetAvailablePackageSummariesResponse{
 				AvailablePackageSummaries: []*corev1.AvailablePackageSummary{
@@ -463,7 +580,6 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 				},
 				Categories: []string{"cat1"},
 			},
-			statusCode: codes.OK,
 		},
 		{
 			name:       "it returns a unimplemented status if no namespaces is provided",
@@ -473,8 +589,8 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 					Namespace: "",
 				},
 			},
-			charts:     []*models.Chart{},
-			statusCode: codes.Unimplemented,
+			charts:    []*models.Chart{},
+			errorCode: connect.CodeUnimplemented,
 		},
 		{
 			name:       "it returns an internal error status if response does not contain version",
@@ -487,18 +603,18 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 			},
 			expectDBQueryNamespace: globalPackagingNamespace,
 			charts:                 []*models.Chart{makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{}, DefaultChartCategory)},
-			statusCode:             codes.Internal,
+			errorCode:              connect.CodeInternal,
 		},
 		{
-			name:       "it returns an unauthenticated status if the user doesn't have permissions",
+			name:       "it returns a permissionDenied status if the user doesn't have permissions",
 			authorized: false,
 			request: &corev1.GetAvailablePackageSummariesRequest{
 				Context: &corev1.Context{
 					Namespace: "my-ns",
 				},
 			},
-			charts:     []*models.Chart{{Name: "foo"}},
-			statusCode: codes.Unauthenticated,
+			charts:    []*models.Chart{{Name: "foo"}},
+			errorCode: connect.CodePermissionDenied,
 		},
 		{
 			name:       "it returns only the requested page of results and includes the next page token",
@@ -509,14 +625,14 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 					Namespace: globalPackagingNamespace,
 				},
 				PaginationOptions: &corev1.PaginationOptions{
-					PageToken: "2",
+					PageToken: "1",
 					PageSize:  1,
 				},
 			},
 			expectDBQueryNamespace: globalPackagingNamespace,
 			charts: []*models.Chart{
-				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"3.0.0"}, DefaultChartCategory),
-				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"2.0.0"}, DefaultChartCategory),
+				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"2.0.0", "3.0.0"}, DefaultChartCategory),
+				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"1.0.0", "2.0.0"}, DefaultChartCategory),
 				makeChart("chart-3", "repo-1", "http://chart-3", "my-ns", []string{"1.0.0"}, DefaultChartCategory),
 			},
 			expectedResponse: &corev1.GetAvailablePackageSummariesResponse{
@@ -538,7 +654,7 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 						},
 					},
 				},
-				NextPageToken: "3",
+				NextPageToken: "2",
 				Categories:    []string{"cat1"},
 			},
 		},
@@ -559,8 +675,8 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 			},
 			expectDBQueryNamespace: globalPackagingNamespace,
 			charts: []*models.Chart{
-				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"3.0.0"}, DefaultChartCategory),
-				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"2.0.0"}, DefaultChartCategory),
+				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"2.0.0", "3.0.0"}, DefaultChartCategory),
+				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"1.0.0", "2.0.0"}, DefaultChartCategory),
 				makeChart("chart-3", "repo-1", "http://chart-3", "my-ns", []string{"1.0.0"}, DefaultChartCategory),
 			},
 			expectedResponse: &corev1.GetAvailablePackageSummariesResponse{
@@ -599,7 +715,7 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 					PageSize:  2,
 				},
 			},
-			statusCode: codes.InvalidArgument,
+			errorCode: connect.CodeInvalidArgument,
 		},
 		{
 			name:       "it returns the proper chart categories",
@@ -612,8 +728,8 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 			},
 			expectDBQueryNamespace: "my-ns",
 			charts: []*models.Chart{
-				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"3.0.0"}, "foo"),
-				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"2.0.0"}, "bar"),
+				makeChart("chart-1", "repo-1", "http://chart-1", "my-ns", []string{"2.0.0", "3.0.0"}, "foo"),
+				makeChart("chart-2", "repo-1", "http://chart-2", "my-ns", []string{"1.0.0", "2.0.0"}, "bar"),
 				makeChart("chart-3", "repo-1", "http://chart-3", "my-ns", []string{"1.0.0"}, "bar"),
 			},
 			expectedResponse: &corev1.GetAvailablePackageSummariesResponse{
@@ -669,7 +785,6 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 				},
 				Categories: []string{"bar", "foo"},
 			},
-			statusCode: codes.OK,
 		},
 	}
 
@@ -688,7 +803,7 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 			}
 
 			if tc.expectDBQueryNamespace != "" {
-				// Checking if the WHERE condtion is properly applied
+				// Checking if the WHERE condition is properly applied
 
 				// Check returned categories
 				catrows := sqlmock.NewRows([]string{"name", "count"})
@@ -715,23 +830,17 @@ func TestGetAvailablePackageSummaries(t *testing.T) {
 				mock.ExpectQuery("SELECT info FROM").
 					WithArgs(tc.expectDBQueryNamespace, server.globalPackagingNamespace).
 					WillReturnRows(rows)
-
-				if tc.request.GetPaginationOptions().GetPageSize() > 0 {
-					mock.ExpectQuery("SELECT count").
-						WithArgs(tc.request.Context.Namespace, server.globalPackagingNamespace).
-						WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
-				}
 			}
 
-			availablePackageSummaries, err := server.GetAvailablePackageSummaries(context.Background(), tc.request)
+			availablePackageSummaries, err := server.GetAvailablePackageSummaries(context.Background(), connect.NewRequest(tc.request))
 
-			if got, want := status.Code(err), tc.statusCode; got != want {
+			if got, want := connect.CodeOf(err), tc.errorCode; err != nil && got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
 
-			if tc.statusCode == codes.OK {
+			if tc.errorCode == 0 {
 				opt1 := cmpopts.IgnoreUnexported(corev1.GetAvailablePackageSummariesResponse{}, corev1.AvailablePackageSummary{}, corev1.AvailablePackageReference{}, corev1.Context{}, plugins.Plugin{}, corev1.PackageAppVersion{})
-				if got, want := availablePackageSummaries, tc.expectedResponse; !cmp.Equal(got, want, opt1) {
+				if got, want := availablePackageSummaries.Msg, tc.expectedResponse; !cmp.Equal(got, want, opt1) {
 					t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opt1))
 				}
 			}
@@ -749,15 +858,15 @@ func TestAvailablePackageDetailFromChart(t *testing.T) {
 		chart      *models.Chart
 		chartFiles *models.ChartFiles
 		expected   *corev1.AvailablePackageDetail
-		statusCode codes.Code
+		errorCode  connect.Code
 	}{
 		{
 			name:  "it returns AvailablePackageDetail if the chart is correct",
-			chart: makeChart("foo", "repo-1", "http://foo", "my-ns", []string{"3.0.0"}, DefaultChartCategory),
+			chart: makeChart("foo", "repo-1", "http://foo", "my-ns", []string{"2.0.0", "3.0.0"}, DefaultChartCategory),
 			chartFiles: &models.ChartFiles{
-				Readme: "chart readme",
-				Values: "chart values",
-				Schema: "chart schema",
+				Readme:        "chart readme",
+				DefaultValues: "chart values",
+				Schema:        "chart schema",
 			},
 			expected: &corev1.AvailablePackageDetail{
 				Name:             "foo",
@@ -783,17 +892,57 @@ func TestAvailablePackageDetailFromChart(t *testing.T) {
 					Plugin:     &plugins.Plugin{Name: "helm.packages", Version: "v1alpha1"},
 				},
 			},
-			statusCode: codes.OK,
 		},
 		{
-			name:       "it returns internal error if empty chart",
-			chart:      &models.Chart{},
-			statusCode: codes.Internal,
+			name:  "it includes additional values files in AvailablePackageDetail when available",
+			chart: makeChart("foo", "repo-1", "http://foo", "my-ns", []string{"2.0.0", "3.0.0"}, DefaultChartCategory),
+			chartFiles: &models.ChartFiles{
+				Readme:        "chart readme",
+				DefaultValues: "chart values",
+				AdditionalDefaultValues: map[string]string{
+					"values-production": "chart production values",
+					"values-staging":    "chart staging values",
+				},
+				Schema: "chart schema",
+			},
+			expected: &corev1.AvailablePackageDetail{
+				Name:             "foo",
+				DisplayName:      "foo",
+				RepoUrl:          "http://foo",
+				HomeUrl:          DefaultChartHomeURL,
+				IconUrl:          DefaultChartIconURL,
+				Categories:       []string{DefaultChartCategory},
+				ShortDescription: DefaultChartDescription,
+				LongDescription:  "",
+				Version: &corev1.PackageAppVersion{
+					PkgVersion: "3.0.0",
+					AppVersion: DefaultAppVersion,
+				},
+				Readme:        "chart readme",
+				DefaultValues: "chart values",
+				AdditionalDefaultValues: map[string]string{
+					"values-production": "chart production values",
+					"values-staging":    "chart staging values",
+				},
+				ValuesSchema: "chart schema",
+				SourceUrls:   []string{"http://source-1"},
+				Maintainers:  []*corev1.Maintainer{{Name: "me", Email: "me@me.me"}},
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context:    &corev1.Context{Namespace: "my-ns"},
+					Identifier: "repo-1/foo",
+					Plugin:     &plugins.Plugin{Name: "helm.packages", Version: "v1alpha1"},
+				},
+			},
 		},
 		{
-			name:       "it returns internal error if chart is invalid",
-			chart:      &models.Chart{Name: "foo"},
-			statusCode: codes.Internal,
+			name:      "it returns internal error if empty chart",
+			chart:     &models.Chart{},
+			errorCode: connect.CodeInternal,
+		},
+		{
+			name:      "it returns internal error if chart is invalid",
+			chart:     &models.Chart{Name: "foo"},
+			errorCode: connect.CodeInternal,
 		},
 	}
 
@@ -801,11 +950,11 @@ func TestAvailablePackageDetailFromChart(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			availablePackageDetail, err := AvailablePackageDetailFromChart(tc.chart, tc.chartFiles)
 
-			if got, want := status.Code(err), tc.statusCode; got != want {
+			if got, want := connect.CodeOf(err), tc.errorCode; err != nil && got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
 
-			if tc.statusCode == codes.OK {
+			if tc.errorCode == 0 {
 				opt1 := cmpopts.IgnoreUnexported(corev1.AvailablePackageDetail{}, corev1.AvailablePackageSummary{}, corev1.AvailablePackageReference{}, corev1.Context{}, plugins.Plugin{}, corev1.Maintainer{}, corev1.PackageAppVersion{})
 				if got, want := availablePackageDetail, tc.expected; !cmp.Equal(got, want, opt1) {
 					t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opt1))
@@ -820,7 +969,7 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 		name            string
 		charts          []*models.Chart
 		expectedPackage *corev1.AvailablePackageDetail
-		statusCode      codes.Code
+		errorCode       connect.Code
 		request         *corev1.GetAvailablePackageDetailRequest
 		authorized      bool
 	}{
@@ -833,7 +982,7 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 					Identifier: "repo-1%2Ffoo",
 				},
 			},
-			charts: []*models.Chart{makeChart("foo", "repo-1", "http://foo", "my-ns", []string{"3.0.0"}, DefaultChartCategory)},
+			charts: []*models.Chart{makeChart("foo", "repo-1", "http://foo", "my-ns", []string{"2.0.0", "3.0.0"}, DefaultChartCategory)},
 			expectedPackage: &corev1.AvailablePackageDetail{
 				Name:             "foo",
 				DisplayName:      "foo",
@@ -857,7 +1006,6 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 					Plugin:     &plugins.Plugin{Name: "helm.packages", Version: "v1alpha1"},
 				},
 			},
-			statusCode: codes.OK,
 		},
 		{
 			name:       "it returns an availablePackageDetail from the database (specific version)",
@@ -869,7 +1017,7 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 				},
 				PkgVersion: "1.0.0",
 			},
-			charts: []*models.Chart{makeChart("foo", "repo-1", "http://foo", "my-ns", []string{"3.0.0", "2.0.0", "1.0.0"}, DefaultChartCategory)},
+			charts: []*models.Chart{makeChart("foo", "repo-1", "http://foo", "my-ns", []string{"1.0.0", "2.0.0", "3.0.0"}, DefaultChartCategory)},
 			expectedPackage: &corev1.AvailablePackageDetail{
 				Name:             "foo",
 				DisplayName:      "foo",
@@ -894,7 +1042,6 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 					Plugin:     &plugins.Plugin{Name: "helm.packages", Version: "v1alpha1"},
 				},
 			},
-			statusCode: codes.OK,
 		},
 		{
 			name:       "it returns an invalid arg error status if no context is provided",
@@ -904,8 +1051,8 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 					Identifier: "foo/bar",
 				},
 			},
-			charts:     []*models.Chart{{Name: "foo"}},
-			statusCode: codes.InvalidArgument,
+			charts:    []*models.Chart{{Name: "foo"}},
+			errorCode: connect.CodeInvalidArgument,
 		},
 		{
 			name:       "it returns an invalid arg error status if cluster is not the global/kubeapps one",
@@ -916,8 +1063,8 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 					Identifier: "foo/bar",
 				},
 			},
-			charts:     []*models.Chart{{Name: "foo"}},
-			statusCode: codes.InvalidArgument,
+			charts:    []*models.Chart{{Name: "foo"}},
+			errorCode: connect.CodeInvalidArgument,
 		},
 		{
 			name:       "it returns an internal error status if the chart is invalid",
@@ -930,7 +1077,7 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 			},
 			charts:          []*models.Chart{{Name: "foo"}},
 			expectedPackage: &corev1.AvailablePackageDetail{},
-			statusCode:      codes.Internal,
+			errorCode:       connect.CodeInternal,
 		},
 		{
 			name:       "it returns an internal error status if the requested chart version doesn't exist",
@@ -944,10 +1091,10 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 			},
 			charts:          []*models.Chart{{Name: "foo"}},
 			expectedPackage: &corev1.AvailablePackageDetail{},
-			statusCode:      codes.Internal,
+			errorCode:       connect.CodeInternal,
 		},
 		{
-			name:       "it returns an unauthenticated status if the user doesn't have permissions",
+			name:       "it returns a permissionDenied status if the user doesn't have permissions",
 			authorized: false,
 			request: &corev1.GetAvailablePackageDetailRequest{
 				AvailablePackageRef: &corev1.AvailablePackageReference{
@@ -957,7 +1104,7 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 			},
 			charts:          []*models.Chart{{Name: "foo"}},
 			expectedPackage: &corev1.AvailablePackageDetail{},
-			statusCode:      codes.Unauthenticated,
+			errorCode:       connect.CodePermissionDenied,
 		},
 	}
 
@@ -975,7 +1122,7 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 				}
 				rows.AddRow(string(chartJSON))
 			}
-			if tc.statusCode == codes.OK {
+			if tc.errorCode == 0 {
 				// Checking if the WHERE condition is properly applied
 				chartIDUnescaped, err := url.QueryUnescape(tc.request.AvailablePackageRef.Identifier)
 				if err != nil {
@@ -986,9 +1133,9 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 					WillReturnRows(rows)
 				fileID := fileIDForChart(chartIDUnescaped, tc.expectedPackage.Version.PkgVersion)
 				fileJSON, err := json.Marshal(models.ChartFiles{
-					Readme: tc.expectedPackage.Readme,
-					Values: tc.expectedPackage.DefaultValues,
-					Schema: tc.expectedPackage.ValuesSchema,
+					Readme:        tc.expectedPackage.Readme,
+					DefaultValues: tc.expectedPackage.DefaultValues,
+					Schema:        tc.expectedPackage.ValuesSchema,
 				})
 				if err != nil {
 					t.Fatalf("%+v", err)
@@ -1000,15 +1147,15 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 					WillReturnRows(fileRows)
 			}
 
-			availablePackageDetails, err := server.GetAvailablePackageDetail(context.Background(), tc.request)
+			availablePackageDetails, err := server.GetAvailablePackageDetail(context.Background(), connect.NewRequest(tc.request))
 
-			if got, want := status.Code(err), tc.statusCode; got != want {
+			if got, want := connect.CodeOf(err), tc.errorCode; err != nil && got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
 
-			if tc.statusCode == codes.OK {
+			if tc.errorCode == 0 {
 				opt1 := cmpopts.IgnoreUnexported(corev1.AvailablePackageDetail{}, corev1.AvailablePackageSummary{}, corev1.AvailablePackageReference{}, corev1.Context{}, plugins.Plugin{}, corev1.Maintainer{}, corev1.PackageAppVersion{})
-				if got, want := availablePackageDetails.AvailablePackageDetail, tc.expectedPackage; !cmp.Equal(got, want, opt1) {
+				if got, want := availablePackageDetails.Msg.AvailablePackageDetail, tc.expectedPackage; !cmp.Equal(got, want, opt1) {
 					t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opt1))
 				}
 			}
@@ -1023,16 +1170,16 @@ func TestGetAvailablePackageDetail(t *testing.T) {
 
 func TestGetAvailablePackageVersions(t *testing.T) {
 	testCases := []struct {
-		name               string
-		charts             []*models.Chart
-		request            *corev1.GetAvailablePackageVersionsRequest
-		expectedStatusCode codes.Code
-		expectedResponse   *corev1.GetAvailablePackageVersionsResponse
+		name              string
+		charts            []*models.Chart
+		request           *corev1.GetAvailablePackageVersionsRequest
+		expectedErrorCode connect.Code
+		expectedResponse  *corev1.GetAvailablePackageVersionsResponse
 	}{
 		{
-			name:               "it returns invalid argument if called without a package reference",
-			request:            nil,
-			expectedStatusCode: codes.InvalidArgument,
+			name:              "it returns invalid argument if called without a package reference",
+			request:           nil,
+			expectedErrorCode: connect.CodeInvalidArgument,
 		},
 		{
 			name: "it returns invalid argument if called without namespace",
@@ -1042,7 +1189,7 @@ func TestGetAvailablePackageVersions(t *testing.T) {
 					Identifier: "bitnami/apache",
 				},
 			},
-			expectedStatusCode: codes.InvalidArgument,
+			expectedErrorCode: connect.CodeInvalidArgument,
 		},
 		{
 			name: "it returns invalid argument if called without an identifier",
@@ -1053,7 +1200,7 @@ func TestGetAvailablePackageVersions(t *testing.T) {
 					},
 				},
 			},
-			expectedStatusCode: codes.InvalidArgument,
+			expectedErrorCode: connect.CodeInvalidArgument,
 		},
 		{
 			name: "it returns invalid argument if called with a cluster other than the global/kubeapps one",
@@ -1063,11 +1210,11 @@ func TestGetAvailablePackageVersions(t *testing.T) {
 					Identifier: "bitnami/apache",
 				},
 			},
-			expectedStatusCode: codes.InvalidArgument,
+			expectedErrorCode: connect.CodeInvalidArgument,
 		},
 		{
 			name:   "it returns the package version summary",
-			charts: []*models.Chart{makeChart("apache", "bitnami", "http://apache", "kubeapps", []string{"3.0.0", "2.0.0", "1.0.0"}, DefaultChartCategory)},
+			charts: []*models.Chart{makeChart("apache", "bitnami", "http://apache", "kubeapps", []string{"2.0.0", "3.0.0", "1.0.0"}, DefaultChartCategory)},
 			request: &corev1.GetAvailablePackageVersionsRequest{
 				AvailablePackageRef: &corev1.AvailablePackageReference{
 					Context: &corev1.Context{
@@ -1076,7 +1223,6 @@ func TestGetAvailablePackageVersions(t *testing.T) {
 					Identifier: "bitnami/apache",
 				},
 			},
-			expectedStatusCode: codes.OK,
 			expectedResponse: &corev1.GetAvailablePackageVersionsResponse{
 				PackageAppVersions: []*corev1.PackageAppVersion{
 					{
@@ -1111,25 +1257,25 @@ func TestGetAvailablePackageVersions(t *testing.T) {
 				}
 				rows.AddRow(string(chartJSON))
 			}
-			if tc.expectedStatusCode == codes.OK {
+			if tc.expectedErrorCode == 0 {
 				mock.ExpectQuery("SELECT info FROM").
 					WithArgs(tc.request.AvailablePackageRef.Context.Namespace, tc.request.AvailablePackageRef.Identifier).
 					WillReturnRows(rows)
 			}
 
-			response, err := server.GetAvailablePackageVersions(context.Background(), tc.request)
+			response, err := server.GetAvailablePackageVersions(context.Background(), connect.NewRequest(tc.request))
 
-			if got, want := status.Code(err), tc.expectedStatusCode; got != want {
+			if got, want := connect.CodeOf(err), tc.expectedErrorCode; err != nil && got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
 
 			// We don't need to check anything else for non-OK codes.
-			if tc.expectedStatusCode != codes.OK {
+			if tc.expectedErrorCode != 0 {
 				return
 			}
 
 			opts := cmpopts.IgnoreUnexported(corev1.GetAvailablePackageVersionsResponse{}, corev1.PackageAppVersion{})
-			if got, want := response, tc.expectedResponse; !cmp.Equal(want, got, opts) {
+			if got, want := response.Msg, tc.expectedResponse; !cmp.Equal(want, got, opts) {
 				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
 			}
 			// we make sure that all expectations were met
@@ -1150,7 +1296,7 @@ func TestParsePluginConfig(t *testing.T) {
 		{
 			name:                    "non existing plugin-config file",
 			pluginYAMLConf:          nil,
-			exp_versions_in_summary: pkgutils.VersionsInSummary{0, 0, 0},
+			exp_versions_in_summary: pkgutils.VersionsInSummary{Major: 0, Minor: 0, Patch: 0},
 			exp_error_str:           "no such file or directory",
 		},
 		{
@@ -1164,7 +1310,7 @@ core:
         minor: 2
         patch: 1
       `),
-			exp_versions_in_summary: pkgutils.VersionsInSummary{4, 2, 1},
+			exp_versions_in_summary: pkgutils.VersionsInSummary{Major: 4, Minor: 2, Patch: 1},
 			exp_error_str:           "",
 		},
 		{
@@ -1176,7 +1322,7 @@ core:
       versionsInSummary:
         major: 1
         `),
-			exp_versions_in_summary: pkgutils.VersionsInSummary{1, 0, 0},
+			exp_versions_in_summary: pkgutils.VersionsInSummary{Major: 1, Minor: 0, Patch: 0},
 			exp_error_str:           "",
 		},
 		{
@@ -1197,6 +1343,10 @@ core:
 	opts := cmpopts.IgnoreUnexported(pkgutils.VersionsInSummary{})
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// TODO(agamez): env vars and file paths should be handled properly for Windows operating system
+			if runtime.GOOS == "windows" {
+				t.Skip("Skipping in a Windows OS")
+			}
 			filename := ""
 			if tc.pluginYAMLConf != nil {
 				pluginJSONConf, err := yaml.YAMLToJSON(tc.pluginYAMLConf)
@@ -1216,12 +1366,13 @@ core:
 				}
 				filename = f.Name()
 			}
-			versions_in_summary, _, goterr := parsePluginConfig(filename)
-			if goterr != nil && !strings.Contains(goterr.Error(), tc.exp_error_str) {
-				t.Errorf("err got %q, want to find %q", goterr.Error(), tc.exp_error_str)
-			}
-			if got, want := versions_in_summary, tc.exp_versions_in_summary; !cmp.Equal(want, got, opts) {
-				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+			pluginConfig, err := common.ParsePluginConfig(filename)
+			if err != nil && !strings.Contains(err.Error(), tc.exp_error_str) {
+				t.Errorf("err got %q, want to find %q", err.Error(), tc.exp_error_str)
+			} else if pluginConfig != nil {
+				if got, want := pluginConfig.VersionsInSummary, tc.exp_versions_in_summary; !cmp.Equal(want, got, opts) {
+					t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+				}
 			}
 		})
 	}
@@ -1273,12 +1424,13 @@ core:
 				}
 				filename = f.Name()
 			}
-			_, timeoutSeconds, goterr := parsePluginConfig(filename)
-			if goterr != nil && !strings.Contains(goterr.Error(), tc.exp_error_str) {
-				t.Errorf("err got %q, want to find %q", goterr.Error(), tc.exp_error_str)
-			}
-			if got, want := timeoutSeconds, tc.exp_timeout; !cmp.Equal(want, got, opts) {
-				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+			pluginConfig, err := common.ParsePluginConfig(filename)
+			if err != nil && !strings.Contains(err.Error(), tc.exp_error_str) {
+				t.Errorf("err got %q, want to find %q", err.Error(), tc.exp_error_str)
+			} else if pluginConfig != nil {
+				if got, want := pluginConfig.TimeoutSeconds, tc.exp_timeout; !cmp.Equal(want, got, opts) {
+					t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+				}
 			}
 		})
 	}
@@ -1328,6 +1480,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 								Namespace: "namespace-1",
 							},
 							Identifier: "my-release-1",
+							Plugin:     GetPluginDetail(),
 						},
 						Name:    "my-release-1",
 						IconUrl: "https://example.com/icon.png",
@@ -1355,6 +1508,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 								Namespace: "namespace-1",
 							},
 							Identifier: "my-release-3",
+							Plugin:     GetPluginDetail(),
 						},
 						Name:    "my-release-3",
 						IconUrl: "https://example.com/icon.png",
@@ -1416,6 +1570,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 								Namespace: "namespace-1",
 							},
 							Identifier: "my-release-1",
+							Plugin:     GetPluginDetail(),
 						},
 						Name:    "my-release-1",
 						IconUrl: "https://example.com/icon.png",
@@ -1443,6 +1598,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 								Namespace: "namespace-2",
 							},
 							Identifier: "my-release-2",
+							Plugin:     GetPluginDetail(),
 						},
 						Name:    "my-release-2",
 						IconUrl: "https://example.com/icon.png",
@@ -1470,6 +1626,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 								Namespace: "namespace-3",
 							},
 							Identifier: "my-release-3",
+							Plugin:     GetPluginDetail(),
 						},
 						Name:    "my-release-3",
 						IconUrl: "https://example.com/icon.png",
@@ -1534,6 +1691,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 								Namespace: "namespace-1",
 							},
 							Identifier: "my-release-1",
+							Plugin:     GetPluginDetail(),
 						},
 						Name:    "my-release-1",
 						IconUrl: "https://example.com/icon.png",
@@ -1561,6 +1719,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 								Namespace: "namespace-2",
 							},
 							Identifier: "my-release-2",
+							Plugin:     GetPluginDetail(),
 						},
 						Name:    "my-release-2",
 						IconUrl: "https://example.com/icon.png",
@@ -1582,7 +1741,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 						},
 					},
 				},
-				NextPageToken: "3",
+				NextPageToken: "2",
 			},
 		},
 		{
@@ -1627,6 +1786,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 								Namespace: "namespace-3",
 							},
 							Identifier: "my-release-3",
+							Plugin:     GetPluginDetail(),
 						},
 						Name:    "my-release-3",
 						IconUrl: "https://example.com/icon.png",
@@ -1675,6 +1835,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 								Namespace: "namespace-1",
 							},
 							Identifier: "my-release-1",
+							Plugin:     GetPluginDetail(),
 						},
 						Name:    "my-release-1",
 						IconUrl: "https://example.com/icon.png",
@@ -1711,7 +1872,7 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 				populateAssetDBWithSummaries(t, mock, tc.expectedResponse.InstalledPackageSummaries)
 			}
 
-			response, err := server.GetInstalledPackageSummaries(context.Background(), tc.request)
+			response, err := server.GetInstalledPackageSummaries(context.Background(), connect.NewRequest(tc.request))
 
 			if got, want := status.Code(err), tc.expectedStatusCode; got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
@@ -1722,8 +1883,8 @@ func TestGetInstalledPackageSummaries(t *testing.T) {
 				return
 			}
 
-			opts := cmpopts.IgnoreUnexported(corev1.GetInstalledPackageSummariesResponse{}, corev1.InstalledPackageSummary{}, corev1.InstalledPackageReference{}, corev1.Context{}, corev1.VersionReference{}, corev1.InstalledPackageStatus{}, corev1.PackageAppVersion{})
-			if got, want := response, tc.expectedResponse; !cmp.Equal(want, got, opts) {
+			opts := cmpopts.IgnoreUnexported(corev1.GetInstalledPackageSummariesResponse{}, corev1.InstalledPackageSummary{}, corev1.InstalledPackageReference{}, corev1.Context{}, corev1.VersionReference{}, corev1.InstalledPackageStatus{}, corev1.PackageAppVersion{}, plugins.Plugin{})
+			if got, want := response.Msg, tc.expectedResponse; !cmp.Equal(want, got, opts) {
 				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
 			}
 
@@ -1750,11 +1911,11 @@ func TestGetInstalledPackageDetail(t *testing.T) {
 		releaseNotes     = "some notes"
 	)
 	testCases := []struct {
-		name               string
-		existingReleases   []releaseStub
-		request            *corev1.GetInstalledPackageDetailRequest
-		expectedResponse   *corev1.GetInstalledPackageDetailResponse
-		expectedStatusCode codes.Code
+		name              string
+		existingReleases  []releaseStub
+		request           *corev1.GetInstalledPackageDetailRequest
+		expectedResponse  *corev1.GetInstalledPackageDetailResponse
+		expectedErrorCode connect.Code
 	}{
 		{
 			name: "returns an installed package detail",
@@ -1828,7 +1989,6 @@ func TestGetInstalledPackageDetail(t *testing.T) {
 					CustomDetail: customDetailRevision2,
 				},
 			},
-			expectedStatusCode: codes.OK,
 		},
 		{
 			name: "returns a 404 if the installed package is not found",
@@ -1840,7 +2000,7 @@ func TestGetInstalledPackageDetail(t *testing.T) {
 					Identifier: releaseName,
 				},
 			},
-			expectedStatusCode: codes.NotFound,
+			expectedErrorCode: connect.CodeNotFound,
 		},
 	}
 
@@ -1851,23 +2011,23 @@ func TestGetInstalledPackageDetail(t *testing.T) {
 			server, mock, cleanup := makeServer(t, authorized, actionConfig)
 			defer cleanup()
 
-			if tc.expectedStatusCode == codes.OK {
+			if tc.expectedErrorCode == 0 {
 				populateAssetDBWithDetail(t, mock, tc.expectedResponse.InstalledPackageDetail)
 			}
 
-			response, err := server.GetInstalledPackageDetail(context.Background(), tc.request)
+			response, err := server.GetInstalledPackageDetail(context.Background(), connect.NewRequest(tc.request))
 
-			if got, want := status.Code(err), tc.expectedStatusCode; got != want {
+			if got, want := connect.CodeOf(err), tc.expectedErrorCode; err != nil && got != want {
 				t.Fatalf("got: %+v, want: %+v, err: %+v", got, want, err)
 			}
 
 			// We don't need to check anything else for non-OK codes.
-			if tc.expectedStatusCode != codes.OK {
+			if tc.expectedErrorCode != 0 {
 				return
 			}
 
 			opts := cmpopts.IgnoreUnexported(corev1.GetInstalledPackageDetailResponse{}, corev1.InstalledPackageDetail{}, corev1.InstalledPackageReference{}, corev1.Context{}, corev1.VersionReference{}, corev1.InstalledPackageStatus{}, corev1.AvailablePackageReference{}, plugins.Plugin{}, corev1.PackageAppVersion{}, anypb.Any{})
-			if got, want := response, tc.expectedResponse; !cmp.Equal(want, got, opts) {
+			if got, want := response.Msg, tc.expectedResponse; !cmp.Equal(want, got, opts) {
 				t.Errorf("mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
 			}
 
@@ -1882,25 +2042,25 @@ func TestGetInstalledPackageDetail(t *testing.T) {
 func TestChartTarballURLBuild(t *testing.T) {
 	testCases := []struct {
 		name         string
-		repo         *models.Repo
+		repo         *models.AppRepository
 		chartVersion *models.ChartVersion
 		expectedUrl  string
 	}{
 		{
 			name:         "tarball url with relative URL without leading slash in chart",
-			repo:         &models.Repo{URL: "https://demo.repo/repo1"},
+			repo:         &models.AppRepository{URL: "https://demo.repo/repo1"},
 			chartVersion: &models.ChartVersion{URLs: []string{"chart/test"}},
 			expectedUrl:  "https://demo.repo/repo1/chart/test",
 		},
 		{
 			name:         "tarball url with relative URL with leading slash in chart",
-			repo:         &models.Repo{URL: "https://demo.repo/repo1"},
+			repo:         &models.AppRepository{URL: "https://demo.repo/repo1"},
 			chartVersion: &models.ChartVersion{URLs: []string{"/chart/test"}},
 			expectedUrl:  "https://demo.repo/repo1/chart/test",
 		},
 		{
 			name:         "tarball url with absolute URL",
-			repo:         &models.Repo{URL: "https://demo.repo/repo1"},
+			repo:         &models.AppRepository{URL: "https://demo.repo/repo1"},
 			chartVersion: &models.ChartVersion{URLs: []string{"https://demo.repo/repo1/chart/test"}},
 			expectedUrl:  "https://demo.repo/repo1/chart/test",
 		},
@@ -1925,7 +2085,7 @@ func newActionConfigFixture(t *testing.T, namespace string, rels []releaseStub, 
 	memDriver := driver.NewMemory()
 
 	if kubeClient == nil {
-		kubeClient = &kubefake.FailingKubeClient{PrintingKubeClient: kubefake.PrintingKubeClient{Out: ioutil.Discard}}
+		kubeClient = &kubefake.FailingKubeClient{PrintingKubeClient: kubefake.PrintingKubeClient{Out: io.Discard}}
 	}
 
 	actionConfig := &action.Configuration{
@@ -1987,23 +2147,6 @@ func releaseForStub(t *testing.T, r releaseStub) *release.Release {
 	}
 }
 
-func chartAssetForPackage(pkg *corev1.InstalledPackageSummary) *models.Chart {
-	chartVersions := []models.ChartVersion{}
-	if pkg.LatestVersion.PkgVersion != "" {
-		chartVersions = append(chartVersions, models.ChartVersion{
-			Version: pkg.LatestVersion.PkgVersion,
-		})
-	}
-	chartVersions = append(chartVersions, models.ChartVersion{
-		Version: pkg.CurrentVersion.PkgVersion,
-	})
-
-	return &models.Chart{
-		Name:          pkg.Name,
-		ChartVersions: chartVersions,
-	}
-}
-
 func chartAssetForReleaseStub(rel *releaseStub) *models.Chart {
 	chartVersions := []models.ChartVersion{}
 	if rel.latestVersion != "" {
@@ -2020,7 +2163,7 @@ func chartAssetForReleaseStub(rel *releaseStub) *models.Chart {
 	return &models.Chart{
 		Name: rel.name,
 		ID:   rel.chartID,
-		Repo: &models.Repo{
+		Repo: &models.AppRepository{
 			Namespace: rel.chartNamespace,
 		},
 		ChartVersions: chartVersions,
@@ -2061,7 +2204,7 @@ func populateAssetForTarball(t *testing.T, mock sqlmock.Sqlmock, chartId, namesp
 	chart := &models.Chart{
 		Name: chartId,
 		ID:   chartId,
-		Repo: &models.Repo{
+		Repo: &models.AppRepository{
 			Namespace: globalPackagingNamespace,
 		},
 		ChartVersions: []models.ChartVersion{{
@@ -2106,4 +2249,207 @@ type releaseStub struct {
 	notes          string
 	status         release.Status
 	manifest       string
+}
+
+func newFakeOCIServer(t *testing.T, responses map[string]*http.Response) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for path, response := range responses {
+			if path == r.URL.Path {
+				if response.Header != nil {
+					for k, vs := range response.Header {
+						for _, v := range vs {
+							w.Header().Set(k, v)
+						}
+					}
+				}
+				w.WriteHeader(response.StatusCode)
+				body := []byte{}
+				if response.Body != nil {
+					var err error
+					body, err = io.ReadAll(response.Body)
+					if err != nil {
+						t.Fatalf("%+v", err)
+					}
+				}
+				_, err := w.Write(body)
+				if err != nil {
+					t.Fatalf("%+v", err)
+				}
+				return
+			}
+		}
+		t.Errorf("unhandled request: %+v", r)
+		w.WriteHeader(404)
+	}))
+}
+
+const CHART_MANIFEST = `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","artifactType":"application/vnd.cncf.helm.config.v1","config":{"mediaType":"application/vnd.oci.empty.v1+json","digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","size":2,"data":"e30="},"layers":[{"mediaType":"application/vnd.oci.image.manifest.v1","digest":"sha256:04e8ea5960143960a55e3cdaf968689593069d726cd1c4bc22e3cc0c40e6a20f","size":1790,"annotations":{"org.opencontainers.image.title":"simplechart-0.1.0.tgz"}}],"annotations":{"org.opencontainers.image.created":"2023-11-24T00:22:24Z"}}`
+
+const CHART_MANIFEST_SHA256 = "sha256:d7e6636cbed61ef760c404e089d21e766b519355b5cb20bd3bd888d2719e5943"
+
+const CHART_REFERERRS_CONTENT = `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:c3d036b5b676fc150a7f079030aa7aa4b0a4ed218354dbf1236e792f9e56e6af","size":827,"annotations":{"org.opencontainers.image.created":"2023-11-24T00:22:30Z","org.opencontainers.image.description":"A description of the scan results"},"artifactType":"application/vnd.oci.empty.v1+json"},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:07b56b5474aebda7af44d379d5c61123906efb2faa62e4ac173abdab8be019bc","size":842,"annotations":{"org.opencontainers.image.created":"2023-11-24T00:22:35Z","org.opencontainers.image.title":"SBOM stuff"},"artifactType":"application/vnd.oci.empty.v1+json"}]}`
+
+func TestGetAvailablePackageMetadatas(t *testing.T) {
+	fakeServer := newFakeOCIServer(t, map[string]*http.Response{
+		// The ORAS client needs to be able to get the manifest
+		// based on the (version) tag:
+		"/v2/chart-name/manifests/1.2.3": {
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(CHART_MANIFEST)),
+			Header:     http.Header{"Content-Type": []string{"application/vnd.oci.image.index.v1+json"}},
+		},
+		// The ORAS client also needs to get the referrers based
+		// on the manifest's sha256
+		path.Join("/v2/chart-name/referrers", CHART_MANIFEST_SHA256): {
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(CHART_REFERERRS_CONTENT)),
+			Header:     http.Header{"Content-Type": []string{"application/vnd.oci.image.index.v1+json"}},
+		},
+	})
+	defer fakeServer.Close()
+
+	var repoNonOCI = &appRepov1alpha1.AppRepository{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: appReposAPIVersion,
+			Kind:       AppRepositoryKind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "repo-non-oci",
+			Namespace:       "kubeapps",
+			ResourceVersion: "1",
+		},
+		Spec: appRepov1alpha1.AppRepositorySpec{
+			URL:         "https://test-repo",
+			Type:        "helm",
+			Description: "description 1",
+		},
+	}
+	var repoOCI = &appRepov1alpha1.AppRepository{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: appReposAPIVersion,
+			Kind:       AppRepositoryKind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "repo-oci",
+			Namespace:       "kubeapps",
+			ResourceVersion: "1",
+		},
+		Spec: appRepov1alpha1.AppRepositorySpec{
+			URL:         fakeServer.URL,
+			Type:        "oci",
+			Description: "description 1",
+		},
+	}
+
+	opts := cmpopts.IgnoreUnexported(
+		corev1.Context{},
+		corev1.GetAvailablePackageMetadatasResponse{},
+		corev1.AvailablePackageReference{},
+		corev1.PackageMetadata{},
+	)
+
+	testCases := []struct {
+		name                 string
+		repos                []*appRepov1alpha1.AppRepository
+		request              *corev1.GetAvailablePackageMetadatasRequest
+		expectedResponse     *corev1.GetAvailablePackageMetadatasResponse
+		expectedResponseCode connect.Code
+	}{
+		{
+			name: "it returns invalid for an invalid identifier",
+			repos: []*appRepov1alpha1.AppRepository{
+				repoNonOCI,
+			},
+			request: &corev1.GetAvailablePackageMetadatasRequest{
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context: &corev1.Context{
+						Cluster:   "default",
+						Namespace: "kubeapps",
+					},
+					Identifier: "not-a-valid-identifier",
+				},
+			},
+			expectedResponseCode: connect.CodeInvalidArgument,
+			expectedResponse:     nil,
+		},
+		{
+			name: "it returns unimplemented for non-OCI repositories",
+			repos: []*appRepov1alpha1.AppRepository{
+				repoNonOCI,
+			},
+			request: &corev1.GetAvailablePackageMetadatasRequest{
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context: &corev1.Context{
+						Cluster:   "default",
+						Namespace: "kubeapps",
+					},
+					Identifier: "repo-non-oci/chart-name",
+				},
+			},
+			expectedResponseCode: connect.CodeUnimplemented,
+			expectedResponse:     nil,
+		},
+		{
+			name: "it returns metadata for OCI repositories",
+			repos: []*appRepov1alpha1.AppRepository{
+				repoOCI,
+			},
+			request: &corev1.GetAvailablePackageMetadatasRequest{
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context: &corev1.Context{
+						Cluster:   "default",
+						Namespace: "kubeapps",
+					},
+					Identifier: "repo-oci/chart-name",
+				},
+				PkgVersion: "1.2.3",
+			},
+			expectedResponseCode: 0,
+			expectedResponse: &corev1.GetAvailablePackageMetadatasResponse{
+				AvailablePackageRef: &corev1.AvailablePackageReference{
+					Context: &corev1.Context{
+						Cluster:   "default",
+						Namespace: "kubeapps",
+					},
+					Identifier: "repo-oci/chart-name",
+				},
+				PackageMetadata: []*corev1.PackageMetadata{
+					{
+						MediaType:    "application/vnd.oci.image.manifest.v1+json",
+						ArtifactType: "application/vnd.oci.empty.v1+json",
+						Digest:       "sha256:c3d036b5b676fc150a7f079030aa7aa4b0a4ed218354dbf1236e792f9e56e6af",
+						Description:  "A description of the scan results",
+					},
+					{
+						Name:         "SBOM stuff",
+						MediaType:    "application/vnd.oci.image.manifest.v1+json",
+						ArtifactType: "application/vnd.oci.empty.v1+json",
+						Digest:       "sha256:07b56b5474aebda7af44d379d5c61123906efb2faa62e4ac173abdab8be019bc",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newServerWithSecretsAndRepos(t, nil, tc.repos)
+
+			response, err := server.GetAvailablePackageMetadatas(context.Background(), connect.NewRequest(tc.request))
+
+			if tc.expectedResponseCode != 0 {
+				if got, want := connect.CodeOf(err), tc.expectedResponseCode; got != want {
+					t.Fatalf("got: %+v, want: %+v. Err: %+v", got, want, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("got: %+v, want: nil", err)
+			}
+
+			if got, want := response.Msg, tc.expectedResponse; !cmp.Equal(want, got, opts) {
+				t.Errorf("response mismatch (-want +got):\n%s", cmp.Diff(want, got, opts))
+			}
+		})
+	}
 }

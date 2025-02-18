@@ -1,33 +1,26 @@
+// Copyright 2020-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 import { CdsButton } from "@cds/react/button";
 import { CdsIcon } from "@cds/react/icon";
 import actions from "actions";
-import Alert from "components/js/Alert";
-import Column from "components/js/Column";
-import Row from "components/js/Row";
+import AlertGroup from "components/AlertGroup";
+import Column from "components/Column";
+import LoadingWrapper from "components/LoadingWrapper";
 import OperatorSummary from "components/OperatorSummary/OperatorSummary";
-import { push } from "connected-react-router";
+import Row from "components/Row";
+import { usePush } from "hooks/push";
 import { useEffect } from "react";
 import { useDispatch, useSelector } from "react-redux";
+import { useParams } from "react-router-dom";
 import { Operators } from "shared/Operators";
 import { IStoreState } from "shared/types";
 import { api, app } from "shared/url";
-import LoadingWrapper from "../LoadingWrapper/LoadingWrapper";
 import OperatorDescription from "./OperatorDescription";
 import OperatorHeader from "./OperatorHeader";
 
-interface IOperatorViewProps {
-  operatorName: string;
-  cluster: string;
-  namespace: string;
-}
-
-export default function OperatorView({ operatorName, cluster, namespace }: IOperatorViewProps) {
+export default function OperatorView() {
   const dispatch = useDispatch();
-  useEffect(() => {
-    dispatch(actions.operators.getOperator(cluster, namespace, operatorName));
-    dispatch(actions.operators.listSubscriptions(cluster, namespace));
-  }, [dispatch, cluster, namespace, operatorName]);
-
   const {
     operators: {
       operator,
@@ -37,7 +30,19 @@ export default function OperatorView({ operatorName, cluster, namespace }: IOper
       },
       subscriptions,
     },
+    clusters: { currentCluster: cluster, clusters },
   } = useSelector((state: IStoreState) => state);
+  const namespace = clusters[cluster].currentNamespace;
+
+  type IOperatorViewParams = {
+    operator: string;
+  };
+  const { operator: operatorName } = useParams<IOperatorViewParams>();
+
+  useEffect(() => {
+    dispatch(actions.operators.getOperator(cluster, namespace, operatorName || ""));
+    dispatch(actions.operators.listSubscriptions(cluster, namespace));
+  }, [dispatch, cluster, namespace, operatorName]);
 
   useEffect(() => {
     if (operator) {
@@ -48,13 +53,14 @@ export default function OperatorView({ operatorName, cluster, namespace }: IOper
     }
   }, [dispatch, operator, cluster, namespace]);
 
-  const redirect = () => dispatch(push(app.operators.new(cluster, namespace, operatorName)));
+  const push = usePush();
+  const redirect = () => push(app.operators.new(cluster, namespace, operatorName || ""));
 
   if (error) {
     return (
-      <Alert theme="danger">
-        An error occurred while fetching the Operator {operatorName}: {error.message}
-      </Alert>
+      <AlertGroup status="danger">
+        An error occurred while fetching the Operator {operatorName}: {error.message}.
+      </AlertGroup>
     );
   }
   if (isFetching || !operator) {
@@ -63,10 +69,10 @@ export default function OperatorView({ operatorName, cluster, namespace }: IOper
   const channel = Operators.getDefaultChannel(operator);
   if (!channel) {
     return (
-      <Alert theme="danger">
+      <AlertGroup status="danger">
         Operator {operatorName} doesn't define a valid channel. This is needed to extract required
         info.
-      </Alert>
+      </AlertGroup>
     );
   }
   const { currentCSVDesc } = channel;

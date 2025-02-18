@@ -1,8 +1,0 @@
-.button {
-  // Override default margin for Clarity
-  margin-right: 0 !important;
-
-  & + .button {
-    margin-left: 0.5rem;
-  }
-}

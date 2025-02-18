@@ -1,14 +1,20 @@
+{{- /*
+Copyright Broadcom, Inc. All Rights Reserved.
+SPDX-License-Identifier: APACHE-2.0
+*/}}
+
+{{- if .Values.packaging.helm.enabled }}
+{{- $versionLabel := dict "app.kubernetes.io/version" ( include "common.images.version" ( dict "imageRoot" .Values.apprepository.image "chart" .Chart ) ) }}
+{{- $labels := include "common.tplvalues.merge" ( dict "values" ( list .Values.commonLabels $versionLabel ) "context" . ) }}
 {{- if .Values.rbac.create -}}
+# Role for managing events, jobs and cronjobs in the release namespace
 apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
 kind: Role
 metadata:
   name: {{ template "kubeapps.apprepository.fullname" . }}
-  namespace: {{ .Release.Namespace | quote }}
-  labels: {{- include "common.labels.standard" . | nindent 4 }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" $labels "context" $ ) | nindent 4 }}
     app.kubernetes.io/component: apprepository
-    {{- if .Values.commonLabels }}
-    {{- include "common.tplvalues.render" ( dict "value" .Values.commonLabels "context" . ) | nindent 4 }}
-    {{- end }}
   {{- if .Values.commonAnnotations }}
   annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
   {{- end }}
@@ -37,6 +43,19 @@ rules:
       - jobs
     verbs:
       - create
+---
+# ClusterRole for managing AppRepository objects in every namespace,
+# so that we can update the finalizers on AppRepository objects
+apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
+kind: ClusterRole
+metadata:
+  name: {{ template "kubeapps.apprepository.fullname.namespace" . }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" .Values.commonLabels "context" $ ) | nindent 4 }}
+    app.kubernetes.io/component: apprepository
+  {{- if .Values.commonAnnotations }}
+  annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
+  {{- end }}
+rules:
   - apiGroups:
       - kubeapps.com
     resources:
@@ -45,19 +64,18 @@ rules:
     verbs:
       - get
       - list
-      - update
       - watch
+      - create
+      - update
+      - patch
 ---
 apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
 kind: RoleBinding
 metadata:
   name: {{ template "kubeapps.apprepository.fullname" . }}
-  namespace: {{ .Release.Namespace | quote }}
-  labels: {{- include "common.labels.standard" . | nindent 4 }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" $labels "context" $ ) | nindent 4 }}
     app.kubernetes.io/component: apprepository
-    {{- if .Values.commonLabels }}
-    {{- include "common.tplvalues.render" ( dict "value" .Values.commonLabels "context" . ) | nindent 4 }}
-    {{- end }}
   {{- if .Values.commonAnnotations }}
   annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
   {{- end }}
@@ -67,20 +85,36 @@ roleRef:
   name: {{ template "kubeapps.apprepository.fullname" . }}
 subjects:
   - kind: ServiceAccount
-    name: {{ template "kubeapps.apprepository.fullname" . }}
+    name: {{ template "kubeapps.apprepository.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# ClusterRoleBinding for the apprepository controller SA
+apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
+kind: ClusterRoleBinding
+metadata:
+  name: {{ template "kubeapps.apprepository.fullname.namespace" . }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" .Values.commonLabels "context" $ ) | nindent 4 }}
+    app.kubernetes.io/component: apprepository
+  {{- if .Values.commonAnnotations }}
+  annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
+  {{- end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ template "kubeapps.apprepository.fullname.namespace" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ template "kubeapps.apprepository.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 ---
 # Define role, but no binding, so users can be bound to this role
 apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
 kind: Role
 metadata:
-  name: {{ .Release.Name }}-repositories-read
-  namespace: {{ .Release.Namespace | quote }}
-  labels: {{- include "common.labels.standard" . | nindent 4 }}
+  name: {{ printf "%s-repositories-read" .Release.Name }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" $labels "context" $ ) | nindent 4 }}
     app.kubernetes.io/component: apprepository
-    {{- if .Values.commonLabels }}
-    {{- include "common.tplvalues.render" ( dict "value" .Values.commonLabels "context" . ) | nindent 4 }}
-    {{- end }}
   {{- if .Values.commonAnnotations }}
   annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
   {{- end }}
@@ -97,13 +131,10 @@ rules:
 apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
 kind: Role
 metadata:
-  name: {{ .Release.Name }}-repositories-write
-  namespace: {{ .Release.Namespace | quote }}
-  labels: {{- include "common.labels.standard" . | nindent 4 }}
+  name: {{ printf "%s-repositories-write" .Release.Name }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" $labels "context" $ ) | nindent 4 }}
     app.kubernetes.io/component: apprepository
-    {{- if .Values.commonLabels }}
-    {{- include "common.tplvalues.render" ( dict "value" .Values.commonLabels "context" . ) | nindent 4 }}
-    {{- end }}
   {{- if .Values.commonAnnotations }}
   annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
   {{- end }}
@@ -127,13 +158,10 @@ rules:
 apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
 kind: ClusterRole
 metadata:
-  name: "kubeapps:{{ .Release.Namespace }}:apprepositories-read"
-  labels: {{- include "common.labels.standard" . | nindent 4 }}
+  name: {{ printf "kubeapps:%s:apprepositories-read" .Release.Namespace | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" $labels "context" $ ) | nindent 4 }}
     app.kubernetes.io/component: apprepository
     rbac.authorization.k8s.io/aggregate-to-view: "true"
-    {{- if .Values.commonLabels }}
-    {{- include "common.tplvalues.render" ( dict "value" .Values.commonLabels "context" . ) | nindent 4 }}
-    {{- end }}
   {{- if .Values.commonAnnotations }}
   annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
   {{- end }}
@@ -151,34 +179,28 @@ rules:
 apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
 kind: ClusterRoleBinding
 metadata:
-  name: "kubeapps:controller:{{ .Release.Namespace }}:apprepositories-read"
-  labels: {{- include "common.labels.standard" . | nindent 4 }}
+  name: {{ printf "kubeapps:controller:%s:apprepositories-read" .Release.Namespace | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" $labels "context" $ ) | nindent 4 }}
     app.kubernetes.io/component: apprepository
-    {{- if .Values.commonLabels }}
-    {{- include "common.tplvalues.render" ( dict "value" .Values.commonLabels "context" . ) | nindent 4 }}
-    {{- end }}
   {{- if .Values.commonAnnotations }}
   annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
   {{- end }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: "kubeapps:{{ .Release.Namespace }}:apprepositories-read"
+  name: {{ printf "kubeapps:%s:apprepositories-read" .Release.Namespace | quote }}
 subjects:
   - kind: ServiceAccount
-    name: {{ template "kubeapps.apprepository.fullname" . }}
+    name: {{ template "kubeapps.apprepository.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
 kind: ClusterRole
 metadata:
-  name: "kubeapps:{{ .Release.Namespace }}:apprepositories-write"
-  labels: {{- include "common.labels.standard" . | nindent 4 }}
+  name: {{ printf "kubeapps:%s:apprepositories-write" .Release.Namespace | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" $labels "context" $ ) | nindent 4 }}
     app.kubernetes.io/component: apprepository
     rbac.authorization.k8s.io/aggregate-to-edit: "true"
-    {{- if .Values.commonLabels }}
-    {{- include "common.tplvalues.render" ( dict "value" .Values.commonLabels "context" . ) | nindent 4 }}
-    {{- end }}
   {{- if .Values.commonAnnotations }}
   annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
   {{- end }}
@@ -199,12 +221,9 @@ rules:
 apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
 kind: ClusterRole
 metadata:
-  name: "kubeapps:{{ .Release.Namespace }}:apprepositories-refresh"
-  labels: {{- include "common.labels.standard" . | nindent 4 }}
+  name: {{ printf "kubeapps:%s:apprepositories-refresh" .Release.Namespace | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" $labels "context" $ ) | nindent 4 }}
     app.kubernetes.io/component: apprepository
-    {{- if .Values.commonLabels }}
-    {{- include "common.tplvalues.render" ( dict "value" .Values.commonLabels "context" . ) | nindent 4 }}
-    {{- end }}
   {{- if .Values.commonAnnotations }}
   annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
   {{- end }}
@@ -220,13 +239,18 @@ rules:
 apiVersion: {{ include "common.capabilities.rbac.apiVersion" . }}
 kind: RoleBinding
 metadata:
-  name: "kubeapps:{{ .Release.Namespace }}:global-repos-read"
-  namespace: "{{ .Release.Namespace }}{{ .Values.apprepository.globalReposNamespaceSuffix }}"
+  name: {{ printf "kubeapps:%s:global-repos-read" .Release.Namespace | quote }}
+  namespace: {{ include "kubeapps.helmGlobalPackagingNamespace" . | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" $labels "context" $ ) | nindent 4 }}
+  {{- if .Values.commonAnnotations }}
+  annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
+  {{- end }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: "kubeapps:{{ .Release.Namespace }}:apprepositories-read"
+  name: {{ printf "kubeapps:%s:apprepositories-read" .Release.Namespace | quote }}
 subjects:
   - kind: Group
     name: system:authenticated
+{{- end -}}
 {{- end -}}

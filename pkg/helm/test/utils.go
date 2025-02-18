@@ -1,3 +1,6 @@
+// Copyright 2021-2022 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package test
 
 import (
@@ -6,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kubeapps/kubeapps/pkg/helm"
+	"github.com/vmware-tanzu/kubeapps/pkg/helm"
 )
 
 // CheckHeader verifies that the given puller contains the given header

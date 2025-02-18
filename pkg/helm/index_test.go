@@ -1,27 +1,21 @@
-/*
-Copyright © 2021 VMware
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2021-2023 the Kubeapps contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 package helm
 
 import (
-	"io/ioutil"
+	"os"
 	"testing"
 
-	"github.com/kubeapps/kubeapps/pkg/chart/models"
 	"github.com/stretchr/testify/assert"
+	"github.com/vmware-tanzu/kubeapps/pkg/chart/models"
 )
 
-var validRepoIndexYAMLBytes, _ = ioutil.ReadFile("testdata/valid-index.yaml")
+var validRepoIndexYAMLBytes, _ = os.ReadFile("testdata/valid-index.yaml")
 var validRepoIndexYAML = string(validRepoIndexYAMLBytes)
+
+var validRepoIndexHarborUnifiedYAMLBytes, _ = os.ReadFile("testdata/valid-index-harbor-unified.yaml")
+var validRepoIndexHarborUnifiedYAML = string(validRepoIndexHarborUnifiedYAMLBytes)
 
 func Test_parseRepoIndex(t *testing.T) {
 	tests := []struct {
@@ -46,7 +40,7 @@ func Test_parseRepoIndex(t *testing.T) {
 }
 
 func Test_chartsFromIndex(t *testing.T) {
-	r := &models.Repo{Name: "test", URL: "http://testrepo.com"}
+	r := &models.AppRepository{Name: "test", URL: "http://testrepo.com"}
 	charts, err := ChartsFromIndex([]byte(validRepoIndexYAML), r, false)
 	assert.NoError(t, err)
 	assert.Equal(t, len(charts), 2, "number of charts")
@@ -61,8 +55,18 @@ func Test_chartsFromIndex(t *testing.T) {
 	assert.Equal(t, len(charts[1].ChartVersions), 2, "number of versions")
 }
 
+func Test_chartsFromIndexHarborUnified(t *testing.T) {
+	r := &models.AppRepository{Name: "test", URL: "http://testrepo.com"}
+	charts, err := ChartsFromIndex([]byte(validRepoIndexHarborUnifiedYAML), r, false)
+	assert.NoError(t, err)
+	assert.Equal(t, len(charts), 2, "number of charts")
+
+	assert.Equal(t, charts[0].Name, "project1%2Facs-engine-autoscaler")
+	assert.Equal(t, charts[1].Name, "project2%2Fwordpress")
+}
+
 func Test_shallowChartsFromIndex(t *testing.T) {
-	r := &models.Repo{Name: "test", URL: "http://testrepo.com"}
+	r := &models.AppRepository{Name: "test", URL: "http://testrepo.com"}
 	charts, err := ChartsFromIndex([]byte(validRepoIndexYAML), r, true)
 	assert.NoError(t, err)
 	assert.Equal(t, len(charts), 2, "number of charts")
@@ -70,7 +74,7 @@ func Test_shallowChartsFromIndex(t *testing.T) {
 }
 
 func Test_newChart(t *testing.T) {
-	r := &models.Repo{Name: "test", URL: "http://testrepo.com"}
+	r := &models.AppRepository{Name: "test", URL: "http://testrepo.com"}
 	index, _ := parseRepoIndex([]byte(validRepoIndexYAML))
 	c := newChart(index.Entries["wordpress"], r, false)
 	assert.Equal(t, c.Name, "wordpress", "correctly built")
@@ -81,7 +85,7 @@ func Test_newChart(t *testing.T) {
 }
 
 func Test_loadRepoWithEmptyCharts(t *testing.T) {
-	r := &models.Repo{Name: "test", URL: "http://testrepo.com"}
+	r := &models.AppRepository{Name: "test", URL: "http://testrepo.com"}
 	indexWithEmptyChart := validRepoIndexYAML + `emptyChart: []`
 	charts, err := ChartsFromIndex([]byte(indexWithEmptyChart), r, true)
 	assert.NoError(t, err)
